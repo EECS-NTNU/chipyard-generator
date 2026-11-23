@@ -129,7 +129,7 @@ SBT_SOURCE_DIRS = $(addprefix $(base_dir)/,generators tools)
 SBT_SOURCES = $(call lookup_srcs,$(SBT_SOURCE_DIRS),sbt) $(base_dir)/build.sbt \
 	$(wildcard $(base_dir)/project/*.scala $(base_dir)/project/*.sbt) $(base_dir)/project/build.properties
 
-ifeq ($(SBT_PROJECT),acceleratorEvaluation)
+ifeq ($(SBT_PROJECT):$(strip $(EXTERNAL_GENERATOR_JAR)),acceleratorEvaluation:)
 ACCELERATOR_PORT_PATCHES = $(wildcard $(base_dir)/accelerators/*/*.patch)
 # The evaluation elaboration recipe makes a second sbt call to verify the cache.
 TAPEOUT_ORDER_DEPS = $(FIRRTL_FILE)
@@ -141,9 +141,11 @@ $(build_dir):
 #########################################################################################
 # compile scala jars
 #########################################################################################
+ifeq ($(strip $(EXTERNAL_GENERATOR_JAR)),)
 $(GENERATOR_CLASSPATH) &: $(CHIPYARD_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(CHIPYARD_VLOG_SOURCES) $(ACCELERATOR_PORT_PATCHES)
 	mkdir -p $(dir $@)
 	$(call run_sbt_assembly,$(SBT_PROJECT),$(GENERATOR_CLASSPATH))
+endif
 
 # order only dependency between sbt runs needed to avoid concurrent sbt runs
 $(TAPEOUT_CLASSPATH) &: $(TAPEOUT_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(TAPEOUT_VLOG_SOURCES) | $(GENERATOR_CLASSPATH) $(TAPEOUT_ORDER_DEPS)
@@ -155,7 +157,7 @@ $(TAPEOUT_CLASSPATH) &: $(TAPEOUT_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(TAPEO
 #########################################################################################
 # AG: must re-elaborate if cva6 sources have changed... otherwise just run firrtl compile
 $(FIRRTL_FILE) $(ANNO_FILE) $(CHISEL_LOG_FILE) &: $(GENERATOR_CLASSPATH) $(EXTRA_GENERATOR_REQS)
-ifeq ($(SBT_PROJECT),acceleratorEvaluation)
+ifeq ($(SBT_PROJECT):$(strip $(EXTERNAL_GENERATOR_JAR)),acceleratorEvaluation:)
 	cd $(base_dir) && $(SBT) "bismo/verifyPinnedSource"
 endif
 	mkdir -p $(build_dir)

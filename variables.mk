@@ -38,6 +38,7 @@ HELP_PROJECT_VARIABLES = \
 "   MODEL_PACKAGE          = the scala package to find the MODEL in [$(MODEL_PACKAGE)]" \
 "   CONFIG                 = the configuration class to give the parameters for the project [$(CONFIG)]" \
 "   CONFIG_PACKAGE         = the scala package to find the CONFIG class [$(CONFIG_PACKAGE)]" \
+"   EXTERNAL_GENERATOR_JAR = generator JAR assembled by an external system build" \
 "   GENERATOR_PACKAGE      = the scala package to find the Generator class in [$(GENERATOR_PACKAGE)]" \
 "   TB                     = testbench wrapper over the TestHarness needed to simulate in a verilog simulator [$(TB)]" \
 "   TOP                    = top level module of the project (normally the module instantiated by the harness) [$(TOP)]"
@@ -201,7 +202,11 @@ long_name = $(MODEL_PACKAGE).$(MODEL).$(CONFIG)
 # classpaths
 CLASSPATH_CACHE ?= $(base_dir)/.classpath_cache
 # The generator classpath must contain the Generator main
+ifneq ($(strip $(EXTERNAL_GENERATOR_JAR)),)
+GENERATOR_CLASSPATH ?= $(abspath $(EXTERNAL_GENERATOR_JAR))
+else
 GENERATOR_CLASSPATH ?= $(CLASSPATH_CACHE)/$(SBT_PROJECT).jar
+endif
 # The tapeout classpath must contain MacroCompiler
 TAPEOUT_CLASSPATH ?= $(CLASSPATH_CACHE)/tapeout.jar
 
