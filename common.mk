@@ -125,9 +125,15 @@ CHIPYARD_VLOG_SOURCES = $(call lookup_srcs_by_multiple_type,$(CHIPYARD_SOURCE_DI
 TAPEOUT_SOURCE_DIRS = $(addprefix $(base_dir)/,tools/tapeout)
 TAPEOUT_SCALA_SOURCES = $(call lookup_srcs_by_multiple_type,$(TAPEOUT_SOURCE_DIRS),$(SCALA_EXT))
 TAPEOUT_VLOG_SOURCES = $(call lookup_srcs_by_multiple_type,$(TAPEOUT_SOURCE_DIRS),$(VLOG_EXT))
-# This assumes no SBT meta-build sources
 SBT_SOURCE_DIRS = $(addprefix $(base_dir)/,generators tools)
-SBT_SOURCES = $(call lookup_srcs,$(SBT_SOURCE_DIRS),sbt) $(base_dir)/build.sbt $(base_dir)/project/plugins.sbt $(base_dir)/project/build.properties
+SBT_SOURCES = $(call lookup_srcs,$(SBT_SOURCE_DIRS),sbt) $(base_dir)/build.sbt \
+	$(wildcard $(base_dir)/project/*.scala $(base_dir)/project/*.sbt) $(base_dir)/project/build.properties
+
+ifeq ($(SBT_PROJECT),acceleratorEvaluation)
+ACCELERATOR_PORT_PATCHES = $(wildcard $(base_dir)/accelerators/*/*.patch)
+# The evaluation elaboration recipe makes a second sbt call to verify the cache.
+TAPEOUT_ORDER_DEPS = $(FIRRTL_FILE)
+endif
 
 $(build_dir):
 	mkdir -p $@
@@ -135,12 +141,12 @@ $(build_dir):
 #########################################################################################
 # compile scala jars
 #########################################################################################
-$(GENERATOR_CLASSPATH) &: $(CHIPYARD_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(CHIPYARD_VLOG_SOURCES)
+$(GENERATOR_CLASSPATH) &: $(CHIPYARD_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(CHIPYARD_VLOG_SOURCES) $(ACCELERATOR_PORT_PATCHES)
 	mkdir -p $(dir $@)
 	$(call run_sbt_assembly,$(SBT_PROJECT),$(GENERATOR_CLASSPATH))
 
 # order only dependency between sbt runs needed to avoid concurrent sbt runs
-$(TAPEOUT_CLASSPATH) &: $(TAPEOUT_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(TAPEOUT_VLOG_SOURCES) | $(GENERATOR_CLASSPATH)
+$(TAPEOUT_CLASSPATH) &: $(TAPEOUT_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(TAPEOUT_VLOG_SOURCES) | $(GENERATOR_CLASSPATH) $(TAPEOUT_ORDER_DEPS)
 	mkdir -p $(dir $@)
 	$(call run_sbt_assembly,tapeout,$(TAPEOUT_CLASSPATH))
 
@@ -149,6 +155,9 @@ $(TAPEOUT_CLASSPATH) &: $(TAPEOUT_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(TAPEO
 #########################################################################################
 # AG: must re-elaborate if cva6 sources have changed... otherwise just run firrtl compile
 $(FIRRTL_FILE) $(ANNO_FILE) $(CHISEL_LOG_FILE) &: $(GENERATOR_CLASSPATH) $(EXTRA_GENERATOR_REQS)
+ifeq ($(SBT_PROJECT),acceleratorEvaluation)
+	cd $(base_dir) && $(SBT) "bismo/verifyPinnedSource"
+endif
 	mkdir -p $(build_dir)
 	(set -o pipefail && $(call run_jar_scala_main,$(GENERATOR_CLASSPATH),$(GENERATOR_PACKAGE).Generator,\
 		--target-dir $(build_dir) \

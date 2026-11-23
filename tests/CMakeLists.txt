@@ -70,6 +70,7 @@ add_link_options(-T ${LINKER_SCRIPT})
 add_executable(pwm pwm.c)
 add_executable(blkdev blkdev.c)
 add_executable(accum accum.c)
+add_executable(bismo-rocc bismo-rocc.c)
 add_executable(charcount charcount.c)
 add_executable(cpp-hello cpp-hello.cpp)
 add_executable(nic-loopback nic-loopback.c)
@@ -92,7 +93,7 @@ add_executable(triple-chiplet triple-chiplet.c)
 # Work around the broken _REENT_SMALL exit path in the GCC 16 nano Newlib
 # shipped by the conda toolchain.
 set(NANO_TEST_TARGETS
-    pwm blkdev accum charcount nic-loopback big-blkdev pingd
+    pwm blkdev accum bismo-rocc charcount nic-loopback big-blkdev pingd
     streaming-passthrough streaming-fir nvdla spiflashread spiflashwrite
     fft gcd hello mt-hello symmetric ctc-test multi-ctc-test triple-chiplet)
 foreach(target IN LISTS NANO_TEST_TARGETS)
@@ -124,6 +125,7 @@ endfunction()
 add_dump_target(pwm)
 add_dump_target(blkdev)
 add_dump_target(accum)
+add_dump_target(bismo-rocc)
 add_dump_target(charcount)
 add_dump_target(cpp-hello)
 add_dump_target(nic-loopback)

@@ -99,6 +99,17 @@ ifeq ($(SUB_PROJECT),chipyard)
 	TB                ?= TestDriver
 	TOP               ?= ChipTop
 endif
+ifeq ($(SUB_PROJECT),acceleratorEvaluation)
+	SBT_PROJECT       ?= acceleratorEvaluation
+	MODEL             ?= TestHarness
+	VLOG_MODEL        ?= $(MODEL)
+	MODEL_PACKAGE     ?= chipyard.harness
+	CONFIG            ?= BismoRocketConfig
+	CONFIG_PACKAGE    ?= chipyard.evaluation
+	GENERATOR_PACKAGE ?= chipyard
+	TB                ?= TestDriver
+	TOP               ?= ChipTop
+endif
 # For TestChipIP developers running unit-tests
 ifeq ($(SUB_PROJECT),testchipip)
 	SBT_PROJECT       ?= chipyard

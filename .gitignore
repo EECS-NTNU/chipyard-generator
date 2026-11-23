@@ -31,3 +31,6 @@ project/project/
 .vscode/
 tests/build/
 conda-reqs/chipyard-base.yaml.bak
+
+# Pinned third-party accelerator checkouts
+/.accelerator-sources/

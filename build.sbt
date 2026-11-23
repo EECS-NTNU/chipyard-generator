@@ -188,6 +188,36 @@ lazy val testchipip = withInitCheck(freshProject("testchipip", file("generators/
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
 
+// Accelerator catalog. The BISMO revision is the gitlink in Vetleh/chipyard
+// at c571567c69d6b95467e6b7a2fb44e595acf6f4b5.
+lazy val bismoSource = PinnedAccelerator.Source(
+  id = "bismo",
+  url = "https://github.com/Vetleh/BISMO_Chisel_3.git",
+  commit = "8cf4329c7cd77adf9500ca06eafe6d4f4b41095a",
+  sources = Seq("src/main/scala", "fpga-tidbits/src/main/scala"),
+  resources = Seq("src/main/resources"),
+  submodules = Seq("fpga-tidbits"),
+  gitOptions = Seq("-c", "url.https://github.com/.insteadOf=git@github.com:"),
+  excludeSources = Set(
+    "src/main/scala/Main.scala",
+    "src/main/scala/cosim",
+    "src/main/scala/RoCCInterface.scala",
+    "src/main/scala/L2MemHelper.scala",
+    "fpga-tidbits/src/main/scala/fpgatidbits/Main.scala",
+    "fpga-tidbits/src/main/scala/fpgatidbits/dma/AXIMemAdapters.scala",
+    "fpga-tidbits/src/main/scala/fpgatidbits/dma/scatter-gather",
+    "fpga-tidbits/src/main/scala/fpgatidbits/platform-wrapper/axi",
+    "fpga-tidbits/src/main/scala/fpgatidbits/platform-wrapper/tester",
+    "fpga-tidbits/src/main/scala/fpgatidbits/platform-wrapper/tests"
+  ),
+  patches = Seq("accelerators/bismo/chisel.patch")
+)
+
+lazy val bismo = Project(bismoSource.id, file("accelerators/bismo"))
+  .settings(commonSettings)
+  .settings(chiselSettings)
+  .settings(PinnedAccelerator.settings(bismoSource))
+
 lazy val chipyard = {
   val useChisel7 = sys.env.contains("USE_CHISEL7")
   // Base chipyard project with always-on dependencies
@@ -291,7 +321,7 @@ lazy val mempress = withInitCheck((project in file("generators/mempress")), "mem
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
 
-lazy val barf = withInitCheck((project in file("generators/bar-fetchers")), "bar-fetchers")
+lazy val barf = withInitCheck(freshProject("barf", file("generators/bar-fetchers")), "bar-fetchers")
   .dependsOn(rocketchip)
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
@@ -301,7 +331,7 @@ lazy val saturn = withInitCheck((project in file("generators/saturn")), "saturn"
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
 
-lazy val constellation = withInitCheck((project in file("generators/constellation")), "constellation")
+lazy val constellation = withInitCheck(freshProject("constellation", file("generators/constellation")), "constellation")
   .dependsOn(rocketchip)
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
@@ -316,7 +346,7 @@ lazy val tracegen = (project in file("generators/tracegen"))
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
 
-lazy val icenet = withInitCheck((project in file("generators/icenet")), "icenet")
+lazy val icenet = withInitCheck(freshProject("icenet", file("generators/icenet")), "icenet")
   .dependsOn(rocketchip)
   .settings(libraryDependencies ++= rocketLibDeps.value)
   .settings(commonSettings)
@@ -512,7 +542,7 @@ lazy val firesimDir = file("sims/firesim")
 // introducing a circular dependency between RC and MIDAS.
 // Minimal in scope (should only depend on Chisel/Firrtl that is
 // cross-compilable between FireSim Chisel 3.* and Chipyard Chisel 6+)
-lazy val midas_target_utils = (project in firesimDir / "sim/midas/targetutils")
+lazy val midas_target_utils = freshProject("midas_target_utils", firesimDir / "sim/midas/targetutils")
   .settings(commonSettings)
   .settings(chiselSettings)
 
@@ -557,3 +587,8 @@ lazy val firechip = (project in file("generators/firechip/chip"))
     Test / testOptions += Tests.Argument("-oF")
   )
   .settings(scalaTestSettings)
+
+lazy val acceleratorEvaluation = Project("acceleratorEvaluation", file("generators/accelerator-evaluation"))
+  .dependsOn(chipyard, bismo)
+  .settings(commonSettings)
+  .settings(chiselSettings)
