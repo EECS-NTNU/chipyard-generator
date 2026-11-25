@@ -71,7 +71,7 @@ object ResolutionFiles {
 
   private def optional(value: Option[String]): String = value.map(string).getOrElse("null")
 
-  private def array(values: Vector[String]): String = block("[", "]", values)
+  private[generator] def array(values: Vector[String]): String = block("[", "]", values)
 
   private[generator] def obj(fields: Vector[(String, String)]): String =
     block("{", "}", fields.map { case (key, value) => string(key) + ": " + value })

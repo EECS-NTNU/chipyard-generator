@@ -27,7 +27,7 @@ jobs:
       - uses: sbt/setup-sbt@v1
 
       - name: Publish locally and run resolver checks
-        run: sbt -batch publishLocal 'resolver/Test/runMain chipyard.generator.MilestoneOneChecks'
+        run: sbt -batch publishLocal 'resolver/Test/runMain chipyard.generator.MilestoneOneChecks' 'resolver/Test/runMain chipyard.generator.SourceSelectionChecks'
 
       - name: Verify local and Git workspaces
         shell: bash

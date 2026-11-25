@@ -55,10 +55,16 @@ private object WorkspaceTemplate {
            |
            |import chisel3._
            |
-           |class Module extends chisel3.Module {
+           |final case class ModuleParams(width: Int = 8)
+           |
+           |object Module {
+           |  def create(params: ModuleParams = ModuleParams()): Module = new Module(params)
+           |}
+           |
+           |class Module(params: ModuleParams = ModuleParams()) extends chisel3.Module {
            |  val io = IO(new Bundle {
-           |    val in = Input(UInt(8.W))
-           |    val out = Output(UInt(8.W))
+           |    val in = Input(UInt(params.width.W))
+           |    val out = Output(UInt(params.width.W))
            |  })
            |
            |  io.out := RegNext(io.in, 0.U)
@@ -80,6 +86,7 @@ private object WorkspaceTemplate {
            |presolve experiments
            |presolve resolve
            |presolve verify
+           |presolve standalone
            |presolve compile baseline
            |presolve run baseline ./program.elf
            |```

@@ -7,7 +7,8 @@ lazy val root = project.in(file("."))
   .settings(publish / skip := true)
 
 lazy val resolver = project.settings(
-  name := "chipyard-generator-resolver"
+  name := "chipyard-generator-resolver",
+  libraryDependencies += "org.scalameta" %% "scalameta" % "4.13.10"
 )
 
 lazy val plugin = project

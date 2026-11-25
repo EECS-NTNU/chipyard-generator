@@ -85,7 +85,7 @@ Local source fingerprints include file contents and executable bits. The resolve
 
 ## Elaborate and simulate
 
-Use the toolchain prefix from the [M0 reference build](reference/chipyard-rocket/README.md). Set `CHIPYARD_TOOLCHAIN_PREFIX` or the sbt setting `hardwareChipyardToolchain` to that directory. In a Chipyard workspace, place a class named `System` extending Chipyard `Config` in `config/<experiment>/System.scala`. Start the file with a single unbraced Scala package declaration, such as `package myworkspace`. The generated build compiles the selected file, the workspace's `src/main` and declared source projects.
+Use the toolchain prefix from the [M0 reference build](reference/chipyard-rocket/README.md). Set `CHIPYARD_TOOLCHAIN_PREFIX` or the sbt setting `hardwareChipyardToolchain` to that directory. In a Chipyard workspace, place a top-level class named `System` extending Chipyard `Config` in `config/<experiment>/System.scala` under a named Scala package. The generated build compiles that experiment directory, the workspace's `src/main`, the declared source projects, and any optional integration units selected by named imports.
 
 ```sh
 sbt hardwareResolve
@@ -105,3 +105,17 @@ cp -R fixtures/build-local fixtures/build-git "$workspaces/"
 (cd "$workspaces/build-local" && sbt hardwareResolve 'hardwareElaborate counter')
 (cd "$workspaces/build-git" && ./prepare.sh && sbt hardwareResolve 'hardwareElaborate counter')
 ```
+
+## Standalone modules and optional integrations
+
+For standalone elaboration, define one `src/main/scala/**/Module.scala` with a public top-level `object Module` in a named Scala package. Give it a `create()` call that constructs a fresh Chisel module. A factory such as `def create(params: CounterParams = CounterParams()): SelectedCounter` preserves typed parameters and supplies the default configuration. The task uses the pinned Chipyard toolchain and writes CIRCT's SystemVerilog under `rtl/` in the generated run directory. [Example parameterized module](fixtures/select/src/main/scala/selectfixture/Module.scala)
+
+```sh
+sbt hardwareResolve hardwareElaborateStandalone
+# With the presolve launcher installed
+presolve standalone
+```
+
+Put an optional integration's sources in `integrations/<unit>/src/main/scala` and its resources in `integrations/<unit>/src/main/resources`. The integration package starts with the owning `Module.scala` package followed by `.integrations.<unit>`. For example, `import myworkspace.integrations.uart.Adapter` selects the unit `integrations/uart`. The convention also applies to source projects in the resolved graph.
+
+Qualified named imports, grouped imports, and renamed symbols can select units. The selector follows imports in ordinary sources, the selected experiment's helpers, and newly selected units. A wildcard alone cannot select an optional integration. The run's `sourceSelection` section lists the active Scala source files and the import location for each selected unit. Each experiment uses the same `hardware.lock`, and its sources and compiled classes live in its own generated build.

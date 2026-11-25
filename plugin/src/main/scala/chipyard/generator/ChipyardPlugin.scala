@@ -17,12 +17,17 @@ object ChipyardPlugin extends AutoPlugin {
     val hardwareChipyardToolchain = settingKey[Option[File]]("Toolchain prefix for the pinned Chipyard build recipe.")
     val hardwareBuildJobs = settingKey[Int]("Parallel jobs for the generated Chipyard build.")
     val hardwareElaborate = inputKey[File]("Elaborate one experiment to Verilog. Usage: hardwareElaborate <experiment>")
+    val hardwareElaborateStandalone = inputKey[File]("Elaborate the workspace Module without a system.")
     val hardwareSimulate = inputKey[File]("Run an ELF with Verilator. Usage: hardwareSimulate <experiment> <binary>")
   }
 
   import autoImport._
 
   private val hardwareResolution = taskKey[Resolution]("Evaluate the resolved hardware dependency graph.")
+  private sealed abstract class BuildCommand(val name: String, val arguments: List[String])
+  private case object Elaborate extends BuildCommand("hardwareElaborate", List("<experiment>"))
+  private case object Simulate extends BuildCommand("hardwareSimulate", List("<experiment>", "<binary>"))
+  private case object Standalone extends BuildCommand("hardwareElaborateStandalone", Nil)
 
   override def trigger = noTrigger
 
@@ -51,8 +56,9 @@ object ChipyardPlugin extends AutoPlugin {
     },
     hardwareResolve := writeResolution(updateLock = true).value,
     hardwareVerify := writeResolution(updateLock = false).value,
-    hardwareElaborate := build(simulate = false).evaluated,
-    hardwareSimulate := build(simulate = true).evaluated
+    hardwareElaborate := build(Elaborate).evaluated,
+    hardwareSimulate := build(Simulate).evaluated,
+    hardwareElaborateStandalone := build(Standalone).evaluated
   )
 
   private def writeResolution(updateLock: Boolean): Def.Initialize[Task[File]] = Def.task {
@@ -67,8 +73,7 @@ object ChipyardPlugin extends AutoPlugin {
     }
   }
 
-  private def build(simulate: Boolean): Def.Initialize[InputTask[File]] = Def.inputTask {
-    val command = if (simulate) "hardwareSimulate" else "hardwareElaborate"
+  private def build(command: BuildCommand): Def.Initialize[InputTask[File]] = Def.inputTask {
     val args = spaceDelimited("<argument>").parsed
     val workspace = baseDirectory.value.toPath
     val output = target.value.toPath
@@ -77,16 +82,15 @@ object ChipyardPlugin extends AutoPlugin {
     val jobs = hardwareBuildJobs.value
     val resolution = hardwareResolution.value
     val log = streams.value.log
-    val usage = if (simulate) "<experiment> <binary>" else "<experiment>"
-    if (args.size != (if (simulate) 2 else 1))
-      throw new MessageOnlyException(s"Usage: $command $usage")
+    if (args.size != command.arguments.size)
+      throw new MessageOnlyException("Usage: " + (command.name :: command.arguments).mkString(" "))
     if (jobs < 1) throw new MessageOnlyException("hardwareBuildJobs must be positive.")
 
     reportErrors {
       ResolutionFiles.write(workspace, output, resolution, updateLock = false)
       val prefix = toolchain.getOrElse(throw new MessageOnlyException(
         "Set CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain to the Chipyard toolchain prefix."))
-      ChipyardBuild.run(workspace, output, cache, resolution, args.head, prefix.toPath, jobs,
+      ChipyardBuild.run(workspace, output, cache, resolution, args.headOption, prefix.toPath, jobs,
         args.lift(1).map(java.nio.file.Paths.get(_)), line => log.info(line), line => log.warn(line)).toFile
     }
   }
