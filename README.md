@@ -101,6 +101,10 @@ cp -R fixtures/local fixtures/git "$workspaces/"
 
 Each workspace writes `hardware.lock` and a generated `target/hardware/<fingerprint>/plan.json`. The plan includes the checkout directories and dependency edges. `hardwareVerify` uses the same declarations and reports drift without rewriting the lock. Run `hardwareResolve` again to accept intentional changes to a declaration or local source.
 
+## Run the milestone acceptance tests
+
+In GitHub Actions, open **Chipyard Generator CI** and select **Run workflow**. The manual run includes the Chipyard acceptance tests and uploads evidence for each milestone. Pull requests and pushes to `main` run the fast resolver, workspace, and source-selection checks. [Coverage and pending tests](tests/milestones/README.md)
+
 ## Workspace declarations
 
 Add `addSbtPlugin("org.eecs-ntnu" % "sbt-chipyard-generator" % "0.1.0-SNAPSHOT")` to `project/plugins.sbt` and enable `ChipyardPlugin` in the workspace root's `build.sbt`.

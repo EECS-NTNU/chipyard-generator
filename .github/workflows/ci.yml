@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,10 +38,63 @@ jobs:
           export XDG_CACHE_HOME="$workspaces/cache"
 
           cp -R fixtures/local fixtures/git "$workspaces/"
-          (cd "$workspaces/local" && sbt -batch hardwareResolve hardwareResolve hardwareVerify)
-          (
-            cd "$workspaces/git"
-            ./prepare.sh
-            sbt -batch hardwareResolve hardwareResolve hardwareVerify
-            sbt -batch 'set hardwareOffline := true' hardwareVerify
-          )
+          for fixture in local git; do
+            (
+              cd "$workspaces/$fixture"
+              if [[ $fixture == git ]]; then ./prepare.sh; fi
+              sbt -batch hardwareResolve
+              cp hardware.lock "$workspaces/$fixture.expected-lock"
+              sbt -batch hardwareResolve hardwareVerify
+              cmp "$workspaces/$fixture.expected-lock" hardware.lock
+              if [[ $fixture == git ]]; then
+                sbt -batch 'set hardwareOffline := true' hardwareVerify
+                cmp "$workspaces/$fixture.expected-lock" hardware.lock
+              fi
+            )
+          done
+
+  milestone-integration:
+    name: ${{ matrix.milestone }} integration tests
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        milestone: [m0, m2, m3, m4, m5, m6]
+    env:
+      MILESTONE: ${{ matrix.milestone }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare the pinned Chipyard toolchain
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/milestones"
+          mkdir -p "$work/artifacts" "$work/home" "$work/cache"
+          {
+            df -h "$RUNNER_TEMP" /var/lib/docker
+            free -h
+          } | tee "$work/artifacts/runner-resources.log"
+          docker build --progress=plain --target milestone-ci -t chipyard-milestone-ci . \
+            2>&1 | tee "$work/artifacts/toolchain-build.log"
+
+      - name: Run milestone acceptance tests
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/milestones"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/repo,readonly" \
+            --mount "type=bind,source=$work,target=/work" \
+            chipyard-milestone-ci bash "/repo/tests/milestones/$MILESTONE.sh" \
+            2>&1 | tee "$work/artifacts/milestone.log"
+
+      - name: Upload milestone evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.milestone }}-evidence
+          path: ${{ runner.temp }}/milestones/artifacts/
+          if-no-files-found: warn

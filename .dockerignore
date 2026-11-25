@@ -17,3 +17,6 @@
 !resolver/src/main/**
 !containers/
 !containers/sbt-repositories
+!tests/
+!tests/milestones/
+!tests/milestones/install-toolchain.sh
