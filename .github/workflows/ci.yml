@@ -24,7 +24,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: step-security/setup-sbt@v2
+      - uses: step-security/setup-sbt@v1
 
       - name: Publish locally and run resolver checks
         run: sbt -batch publishLocal 'resolver/Test/runMain chipyard.generator.MilestoneOneChecks' 'resolver/Test/runMain chipyard.generator.SourceSelectionChecks'
