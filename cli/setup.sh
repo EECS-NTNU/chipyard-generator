@@ -10,7 +10,7 @@ if (( $# )); then
     exit 2
 fi
 
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+repo=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 stage="$repo/cli/target/stage"
 activation="$repo/cli/target/presolve-env.sh"
 revision=$(<"$repo/cli/src/main/resources/chipyard-revision")
@@ -36,12 +36,10 @@ check_toolchain() {
             return 1
         fi
     done
-    for executable in riscv-tools/lib/libfesvr.a; do
-        if [[ ! -f $prefix/$executable ]]; then
-            printf 'Missing toolchain library %s\n' "$prefix/$executable" >&2
-            return 1
-        fi
-    done
+    if [[ ! -f $prefix/riscv-tools/lib/libfesvr.a && ! -f $prefix/riscv-tools/lib/libfesvr.so ]]; then
+        printf 'Missing libfesvr in %s/riscv-tools/lib.\n' "$prefix" >&2
+        return 1
+    fi
     version=$("$prefix/bin/java" -version 2>&1) && [[ $version =~ version\ \"20[.\"] ]] || {
         printf 'Chipyard requires JDK 20 at %s/bin/java.\n' "$prefix" >&2
         return 1
@@ -58,7 +56,7 @@ check_toolchain() {
 
 use_toolchain() {
     local prefix
-    prefix=$(cd -- "$1" && pwd -P) && check_toolchain "$prefix" || return 1
+    prefix=$(CDPATH= cd -- "$1" && pwd -P) && check_toolchain "$prefix" || return 1
     toolchain=$prefix
 }
 
@@ -96,12 +94,13 @@ install_toolchain() {
     mkdir -p -- "$(dirname -- "$destination")" &&
         mkdir -- "$destination" &&
         git -C "$destination" init &&
-        git -C "$destination" fetch --depth=1 https://github.com/ucb-bar/chipyard.git "$revision" &&
+        git -C "$destination" remote add origin https://github.com/ucb-bar/chipyard.git &&
+        git -C "$destination" fetch --depth=1 origin "$revision" &&
         git -C "$destination" checkout --detach FETCH_HEAD &&
         (
             cd -- "$destination" &&
             export CONDA_EXE="$conda_exe" PATH="$(dirname -- "$conda_exe"):$PATH" &&
-            ./build-setup.sh riscv-tools --skip-ctags --skip-precompile --skip-marshal --skip-clean
+            ./build-setup.sh riscv-tools --skip-ctags --skip 5 --skip-firesim --skip-marshal --skip-clean
         ) &&
         use_toolchain "$destination/.conda-env" || {
         printf 'Toolchain installation did not complete. See the output above and any logs in %s.\n' "$destination" >&2

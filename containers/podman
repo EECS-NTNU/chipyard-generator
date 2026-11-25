@@ -1,0 +1,4 @@
+#!/bin/sh
+export TMPDIR="${PRESOLVE_PODMAN_TMPDIR:-/tmp}"
+export PODMAN_USERNS="${PODMAN_USERNS:-keep-id}"
+exec /usr/bin/podman "$@"

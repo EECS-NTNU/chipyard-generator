@@ -20,6 +20,8 @@ The reference uses the stock `chipyard.RocketConfig` and Chipyard's upstream Ver
 
 The run used a preinstalled Linux x86-64 Chipyard Conda environment with these versions. The toolchain prefix contains `bin/`, `lib/jvm/` and `riscv-tools/`. The runner uses Maven Central and the sbt plugin repository for the dependencies of the pinned upstream build.
 
+The [Presolve setup script](../../cli/setup.sh) can install a compatible toolchain using this revision's upstream installer. Conda must be available on `PATH` for that option. [Upstream Conda setup instructions](https://github.com/ucb-bar/chipyard/blob/a7946ede9bd625204435715dc40c750e2f8a251f/docs/Chipyard-Basics/Initial-Repo-Setup.rst#default-requirements-installation)
+
 ## Reproduce
 
 From this tool repository, initialize a fresh upstream checkout. Set `CHIPYARD_TOOLCHAIN_PREFIX` to the preinstalled environment described above.
