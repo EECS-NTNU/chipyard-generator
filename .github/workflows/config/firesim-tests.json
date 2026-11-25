@@ -1,9 +1,0 @@
-{
-  "onprem": [
-    "RocketU250Tests",
-    "RocketVCU118Tests"
-  ],
-  "f2": [
-    "RocketF2Tests"
-  ]
-}

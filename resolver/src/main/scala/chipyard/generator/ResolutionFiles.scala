@@ -18,6 +18,12 @@ object ResolutionFiles {
     planPath
   }
 
+  private[generator] def lockFingerprint(resolution: Resolution): String =
+    FilesSupport.sha256(bytes(document(resolution, includeLocations = false)))
+
+  private[generator] def writeJson(path: Path, json: String): Unit =
+    FilesSupport.writeAtomically(path, bytes(json))
+
   private def bytes(json: String): Array[Byte] = (json + "\n").getBytes(UTF_8)
 
   private def document(resolution: Resolution, includeLocations: Boolean): String = {
@@ -67,7 +73,7 @@ object ResolutionFiles {
 
   private def array(values: Vector[String]): String = block("[", "]", values)
 
-  private def obj(fields: Vector[(String, String)]): String =
+  private[generator] def obj(fields: Vector[(String, String)]): String =
     block("{", "}", fields.map { case (key, value) => string(key) + ": " + value })
 
   private def block(open: String, close: String, entries: Vector[String]): String =
@@ -75,7 +81,7 @@ object ResolutionFiles {
     else entries.map(entry => entry.split("\n", -1).map("  " + _).mkString("\n"))
       .mkString(open + "\n", ",\n", "\n" + close)
 
-  private def string(value: String): String = {
+  private[generator] def string(value: String): String = {
     val escaped = value.flatMap {
       case '"' => "\\\""
       case '\\' => "\\\\"

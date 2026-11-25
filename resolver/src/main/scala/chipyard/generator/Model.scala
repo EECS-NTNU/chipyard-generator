@@ -40,7 +40,8 @@ final case class PlatformRecipe(
     id: String,
     source: GitSource,
     toolchain: Map[String, String],
-    projects: Map[String, RecipeProject]
+    projects: Map[String, RecipeProject],
+    buildSubmodules: Vector[String] = Vector.empty
 )
 
 final case class SubmodulePin(path: String, repository: String, commit: String)

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -cp "$directory/lib/*" chipyard.generator.cli.Presolve "$@"

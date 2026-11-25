@@ -1,0 +1,46 @@
+name: Chipyard Generator CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  workspace-checks:
+    name: Resolver and workspace checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: sbt/setup-sbt@v1
+
+      - name: Publish locally and run resolver checks
+        run: sbt -batch publishLocal 'resolver/Test/runMain chipyard.generator.MilestoneOneChecks'
+
+      - name: Verify local and Git workspaces
+        shell: bash
+        run: |
+          workspaces=$(mktemp -d)
+          trap 'rm -rf -- "$workspaces"' EXIT
+          export XDG_CACHE_HOME="$workspaces/cache"
+
+          cp -R fixtures/local fixtures/git "$workspaces/"
+          (cd "$workspaces/local" && sbt -batch hardwareResolve hardwareResolve hardwareVerify)
+          (
+            cd "$workspaces/git"
+            ./prepare.sh
+            sbt -batch hardwareResolve hardwareResolve hardwareVerify
+            sbt -batch 'set hardwareOffline := true' hardwareVerify
+          )

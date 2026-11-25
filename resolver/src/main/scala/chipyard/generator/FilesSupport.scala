@@ -11,6 +11,15 @@ private[generator] object FilesSupport {
 
   def sha256(bytes: Array[Byte]): String = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
 
+  def fileDigest(path: Path, buffer: Array[Byte]): Array[Byte] = {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val stream = Files.newInputStream(path)
+    try Iterator.continually(stream.read(buffer)).takeWhile(_ != -1)
+      .foreach(count => digest.update(buffer, 0, count))
+    finally stream.close()
+    digest.digest()
+  }
+
   def portable(path: Path): String = path.iterator().asScala.mkString("/")
 
   def deleteTree(path: Path): Unit = {
@@ -78,13 +87,7 @@ private[generator] object LocalInputs {
           visit(file)
         } else if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
           add(if (Files.isExecutable(file)) "executable" else "file")
-          val content = MessageDigest.getInstance("SHA-256")
-          val stream = Files.newInputStream(file)
-          try {
-            Iterator.continually(stream.read(buffer)).takeWhile(_ != -1)
-              .foreach(count => content.update(buffer, 0, count))
-          } finally stream.close()
-          digest.update(content.digest())
+          digest.update(FilesSupport.fileDigest(file, buffer))
         } else throw new ResolutionException(s"Unsupported local input: $file")
       }
     }

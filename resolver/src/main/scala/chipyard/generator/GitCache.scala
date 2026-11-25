@@ -66,6 +66,14 @@ final class GitCache(root: Path, offline: Boolean = false) {
     get(GitSource(pin.repository, pin.commit))
   }
 
+  /** Makes a writable checkout with independent Git objects. */
+  private[generator] def copyCheckout(source: CachedSource, destination: Path): Unit = {
+    Files.createDirectories(destination.getParent)
+    git(destination.getParent, "clone", "--quiet", "--no-hardlinks", "--",
+      source.directory.toString, destination.toString)
+    git(destination, "checkout", "--quiet", "--detach", source.commit)
+  }
+
   private def complete(path: Path): Boolean = Files.isRegularFile(path.resolve(marker))
 
   private def rawPins(directory: Path): Vector[(String, String)] =

@@ -86,7 +86,8 @@ final class Resolver(cache: GitCache) {
       val source = generator.source match {
         case LocalSource(local) => LocalInputs.resolve(rootDirectory, local)
         case git: GitSource => cache.withSubmodules(cache.get(git))
-        case ChipyardSource(`platformId`) => ResolvedGit(platformCheckout, Vector.empty)
+        case ChipyardSource(`platformId`) =>
+          ResolvedGit(platformCheckout, platformSubmodules(platformCheckout, platform.get.buildSubmodules))
         case ChipyardSource(project) =>
           val selected = platform.get
           val submodulePath = selected.projects(project).submodule
@@ -97,6 +98,21 @@ final class Resolver(cache: GitCache) {
       ResolvedNode(id, generator.name, generator.alias, source, requirement.recipe, requirement.edges)
     }
     Resolution(roots.map(_.id).sorted, platform, platformTools ++ toolchain, nodes)
+  }
+
+  private def platformSubmodules(root: CachedSource, paths: Vector[String]): Vector[(String, CachedSource)] = {
+    val resolved = mutable.Map("" -> root)
+    paths.sorted.map { path =>
+      val (parentPath, parent) = resolved.iterator.filter { case (prefix, _) =>
+        prefix.isEmpty || path.startsWith(prefix + "/")
+      }.maxBy(_._1.length)
+      val relative = if (parentPath.isEmpty) path else path.stripPrefix(parentPath + "/")
+      val pin = parent.pins.find(_.path == relative).getOrElse(throw new ResolutionException(
+        s"Platform recipe expected submodule '$path' at ${parent.commit}."))
+      val child = cache.getSubmodule(parent, pin)
+      resolved(path) = child
+      path -> child
+    }
   }
 }
 
