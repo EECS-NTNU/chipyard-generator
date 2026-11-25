@@ -4,7 +4,16 @@ The sbt plugin resolves a hardware workspace from its `build.sbt`. It fetches pi
 
 ## Create a workspace with presolve
 
-With Git, a JDK (11 or newer), and sbt installed, run these commands from the Chipyard Generator checkout.
+Run the guided setup from the Chipyard Generator checkout.
+
+```sh
+bash cli/setup.sh
+source cli/target/presolve-env.sh
+```
+
+Setup checks Git, JDK 11+, and sbt, publishes the plugin locally, and prepares the launcher. You can use an existing Chipyard toolchain, install one with Conda on Linux x86-64, or configure it later. The installer downloads the pinned upstream checkout and puts its Conda environment under the checkout directory you select. Setup also offers to create and resolve a first workspace.
+
+For manual setup, run the sbt tasks directly.
 
 ```sh
 sbt publishLocal cli/stage

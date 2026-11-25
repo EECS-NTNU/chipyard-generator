@@ -5,10 +5,15 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{FileAlreadyExistsException, Files, Path}
 import java.util.{Locale, Properties}
 import scala.collection.mutable.ArrayBuffer
+import scala.io.Source
 import scala.util.control.NonFatal
 
 private object WorkspaceTemplate {
-  private val chipyardCommit = "a7946ede9bd625204435715dc40c750e2f8a251f"
+  private lazy val chipyardCommit = {
+    val revision = Source.fromResource("chipyard-revision")
+    try revision.mkString.trim
+    finally revision.close()
+  }
 
   private lazy val buildMetadata = {
     val properties = new Properties()
