@@ -18,9 +18,13 @@ object AliasNamespaceChecks {
         new String(Files.readAllBytes(source.path), UTF_8)
       }
 
+      println("Accepts an alias that is a valid Scala package identifier.")
       AliasNamespace.validateAlias("generator_baseline")
+      println("Rejects hyphenated aliases as Scala package identifiers.")
       expectFailure("Scala package identifier") { AliasNamespace.validateAlias("generator-baseline") }
+      println("Rejects Scala keywords as aliases.")
       expectFailure("Scala package identifier") { AliasNamespace.validateAlias("class") }
+      println("Rejects the reserved Scala root package as an alias.")
       expectFailure("Scala package identifier") { AliasNamespace.validateAlias("_root_") }
 
       val implementation = source("Core.scala",
@@ -47,7 +51,9 @@ object AliasNamespaceChecks {
       val packageObject = source("package.scala", "package object generator { val tool = generator.util.Tool() }\n")
       val nested = source("Nested.scala",
         "package generator { package generator.detail { class Nested { private[generator] val id = 1 } } }\n")
+      println("Identifies the generator's top-level package across its source files.")
       assert(AliasNamespace.root(Vector(implementation, packageObject, nested), "generator_baseline") == "generator")
+      println("Relocates generator references while preserving shared packages, literals, and shadowed names.")
       assert(relocate(implementation) ==
         """package generator_baseline.core
           |
@@ -69,17 +75,21 @@ object AliasNamespaceChecks {
           |  }
           |}
           |""".stripMargin)
+      println("Relocates a top-level package object and its generator references.")
       assert(relocate(packageObject) == "package object generator_baseline { val tool = generator_baseline.util.Tool() }\n")
+      println("Preserves relative package names and visibility qualifiers in nested package blocks.")
       assert(relocate(nested) ==
         "package generator_baseline { package generator.detail { class Nested { private[generator] val id = 1 } } }\n")
 
+      println("Rejects a generator with multiple top-level Scala packages.")
       expectFailure("one top-level Scala package") {
         AliasNamespace.root(Vector(implementation, source("Other.scala", "package other\nclass Else\n")), "ambiguous")
       }
+      println("Rejects a generator declared in Scala's default package.")
       expectFailure("must declare a named package") {
         AliasNamespace.root(Vector(source("Default.scala", "object InDefaultPackage {}")), "default_alias")
       }
-      println("Milestone 4 alias namespace checks passed.")
+      println("Alias namespace checks passed.")
     } finally FilesSupport.deleteTree(work)
   }
 

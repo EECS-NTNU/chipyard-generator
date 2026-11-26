@@ -1,6 +1,6 @@
-# M0 Chipyard reference simulation
+# Chipyard Rocket reference simulation
 
-The reference uses the stock `chipyard.RocketConfig` and Chipyard's upstream Verilator Makefiles at commit `a7946ede9bd625204435715dc40c750e2f8a251f`. This is the platform commit used by the M1 resolver. [Upstream simulation guide at the pinned commit](https://github.com/ucb-bar/chipyard/blob/a7946ede9bd625204435715dc40c750e2f8a251f/docs/Simulation/Software-RTL-Simulation.rst)
+The reference uses the stock `chipyard.RocketConfig` and Chipyard's upstream Verilator Makefiles at commit `a7946ede9bd625204435715dc40c750e2f8a251f`. [Upstream simulation guide at the pinned commit](https://github.com/ucb-bar/chipyard/blob/a7946ede9bd625204435715dc40c750e2f8a251f/docs/Simulation/Software-RTL-Simulation.rst)
 
 ## Toolchain
 

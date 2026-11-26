@@ -15,14 +15,18 @@ object Presolve {
       |  verify                       Check hardware.lock
       |  compile <experiment>        Elaborate an experiment to RTL (alias: elaborate)
       |  standalone                  Elaborate the workspace Module to RTL
-      |  run <experiment> <elf>       Build a Verilator simulator and run an ELF (alias: simulate)
+      |  build <experiment>          Build a Verilator simulator
+      |  build-fpga <experiment>     FPGA bitstream build placeholder
+      |  run <experiment> <elf> [--build <build-dir>]
+      |                              Run an ELF with an existing simulator (alias: simulate)
       |
       |Workspace commands look for build.sbt in the current directory and its parents.
-      |Resolve, verify, compile, standalone, and run require sbt on PATH. For a generated workspace,
+      |Resolve, verify, compile, standalone, build, and run require sbt on PATH. For a generated workspace,
       |publish the plugin locally with sbt publishLocal from the tool checkout.
-      |Resolve before compiling or running. Set CHIPYARD_TOOLCHAIN_PREFIX for the
-      |pinned Chipyard toolchain, or configure hardwareChipyardToolchain in build.sbt.
-      |ELF paths are relative to the directory where you invoke presolve.
+      |Resolve before compiling or running. Presolve looks for the pinned Chipyard
+      |toolchain under $XDG_DATA_HOME/presolve (default: $HOME/.local/share/presolve).
+      |Use CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain in build.sbt to override it.
+      |ELF and build paths are relative to the directory where you invoke presolve.
       |""".stripMargin
 
   private val experimentName = "[A-Za-z0-9][A-Za-z0-9_-]*"
@@ -70,16 +74,32 @@ object Presolve {
       val workspace = workspaceRoot(cwd)
       checkExperiment(workspace, name)
       sbt(workspace, s"hardwareElaborate $name")
-    case ("run" | "simulate") :: name :: elf :: Nil =>
+    case "build" :: name :: Nil =>
       val workspace = workspaceRoot(cwd)
       checkExperiment(workspace, name)
-      val payload = cwd.resolve(elf).normalize()
-      if (!Files.isRegularFile(payload))
-        throw new IllegalArgumentException(s"Simulation payload does not exist: $payload")
-      sbt(workspace, s"hardwareSimulate $name ${quoteSbtArgument(payload.toString)}")
+      sbt(workspace, s"hardwareBuildSimulator $name")
+    case "build-fpga" :: name :: Nil =>
+      checkExperiment(workspaceRoot(cwd), name)
+      Console.err.println("presolve: FPGA bitstream build is not implemented yet.")
+      1
+    case ("run" | "simulate") :: name :: elf :: Nil => simulate(cwd, name, elf, None)
+    case ("run" | "simulate") :: name :: elf :: "--build" :: build :: Nil =>
+      simulate(cwd, name, elf, Some(cwd.resolve(build).normalize()))
     case _ =>
       Console.err.println("presolve: Unknown command or incorrect arguments. See presolve --help.")
       2
+  }
+
+  private def simulate(cwd: Path, name: String, elf: String, build: Option[Path]): Int = {
+    val workspace = workspaceRoot(cwd)
+    if (!name.matches(experimentName))
+      throw new IllegalArgumentException(s"Invalid experiment name '$name'.")
+    if (build.isEmpty) checkExperiment(workspace, name)
+    val payload = cwd.resolve(elf).normalize()
+    if (!Files.isRegularFile(payload))
+      throw new IllegalArgumentException(s"Simulation payload does not exist: $payload")
+    val selection = build.fold("")(path => s" --build ${quoteSbtArgument(path.toString)}")
+    sbt(workspace, s"hardwareSimulate $name ${quoteSbtArgument(payload.toString)}$selection")
   }
 
   private def workspaceRoot(cwd: Path): Path =

@@ -80,14 +80,15 @@ private object WorkspaceTemplate {
         s"""# $name
            |
            |Install presolve and publish the Chipyard Generator plugin locally from the tool checkout.
-           |Set `CHIPYARD_TOOLCHAIN_PREFIX` to the pinned Chipyard toolchain prefix before compiling or simulating.
+           |Presolve looks for the pinned Chipyard toolchain in its local share directory.
+           |Use `CHIPYARD_TOOLCHAIN_PREFIX` to select a toolchain installed elsewhere.
            |
            |```sh
            |presolve experiments
            |presolve resolve
            |presolve verify
            |presolve standalone
-           |presolve compile baseline
+           |presolve build baseline
            |presolve run baseline ./program.elf
            |```
            |

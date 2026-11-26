@@ -23,8 +23,17 @@ object ChipyardBuild {
     "cde" -> "cde", "firesim" -> "midas_target_utils"
   )
 
-  /** Copies locked sources into a writable build and delegates elaboration or simulation to Chipyard Make. */
-  def run(
+  private val simulatorDirectory = "chipyard/sims/verilator"
+  private val simulatorName = "simulator-chipyard.harness-System"
+  private val simulatorMarker = "simulator.ready"
+
+  private final case class PreparedBuild(fingerprint: String, packageName: String, overlay: String, manifest: String)
+  private final case class SimulatorBuild(directory: Path, packageName: String, toolchain: Path) {
+    def executable: Path = directory.resolve(simulatorDirectory).resolve(simulatorName)
+  }
+
+  /** Stages locked sources, generates the requested hardware, and publishes a simulator only after Make succeeds. */
+  def build(
       workspace: Path,
       target: Path,
       cacheDirectory: Path,
@@ -32,12 +41,161 @@ object ChipyardBuild {
       experiment: Option[String],
       toolchain: Path,
       jobs: Int,
-      payload: Option[Path],
+      buildSimulator: Boolean,
       info: String => Unit,
       warn: String => Unit
   ): Path = {
-    val platform = resolution.platform.getOrElse(
-      throw new ResolutionException("Set chipyardVersion before elaborating hardware."))
+    val platform = buildPlatform(resolution)
+    val nodes = resolution.nodes.sortBy(_.id)
+    val platformSources = nodes.find(_.id == "chipyard").map(_.source).collect { case git: ResolvedGit => git }
+      .getOrElse(throw new ResolutionException("The verified resolution is missing the Chipyard checkout."))
+    val builds = target.toAbsolutePath.normalize().resolve("hardware/builds")
+    val toolchainRoot = toolchain.toAbsolutePath.normalize()
+    val sourceCache = cacheDirectory.toAbsolutePath.normalize()
+    checkMakePaths(toolchainRoot, builds, sourceCache)
+    val standalone = experiment.isEmpty
+    val environment = toolEnvironment(toolchainRoot)
+    val versions = toolVersions(toolchainRoot, environment, platform.toolchain, standalone)
+    val backend = if (standalone) "circt-standalone" else if (buildSimulator) "verilator-build" else "verilator-elaborate"
+
+    val (directory, prepared) = withStaging(builds) { staging =>
+      val checkout = staging.resolve("chipyard")
+      val git = new GitCache(sourceCache)
+      git.copyCheckout(platformSources.checkout, checkout)
+      platformSources.submodules.foreach { case (path, source) => git.copyCheckout(source, checkout.resolve(path)) }
+      val inputs = prepareSources(workspace, checkout, resolution, experiment, versions, backend, info)
+      Files.write(checkout.resolve("build.sbt"), inputs.overlay.getBytes(UTF_8), StandardOpenOption.APPEND)
+      ResolutionFiles.writeJson(staging.resolve("run.json"), inputs.manifest)
+      val destination = builds.resolve(inputs.fingerprint).resolve(UUID.randomUUID().toString)
+      Files.createDirectories(destination.getParent)
+      Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE) -> inputs
+    }
+
+    val settings = makeEnvironment(directory, sourceCache, jobs, environment)
+    val checkout = directory.resolve("chipyard")
+    val firtool = toolchainRoot.resolve("riscv-tools/bin/firtool")
+    val simulator = SimulatorBuild(directory, prepared.packageName, toolchainRoot)
+    val command = if (standalone) {
+      val rtl = Files.createDirectories(directory.resolve("rtl"))
+      Vector(toolchainRoot.resolve("bin/java").toString, "-jar", checkout.resolve("scripts/sbt-launch.jar").toString) ++
+        sbtOptions(directory, sourceCache) :+ s"hardwareSystem/runMain $standaloneMain $rtl $firtool"
+    } else {
+      val goal = if (buildSimulator) Vector(s"sim=${simulator.executable}", "default") else Vector("verilog")
+      makeCommand(simulator, jobs) ++ goal
+    }
+
+    info(s"Generated Chipyard build: $directory")
+    val workingDirectory = if (standalone) checkout else directory.resolve(simulatorDirectory)
+    val exited = Process(withoutEnvironment(inheritedBuildOverrides) ++ command, workingDirectory.toFile, settings: _*)
+      .!(ProcessLogger(info, warn))
+    if (exited != 0)
+      throw new ResolutionException(s"Chipyard ${experiment.getOrElse("standalone")} failed with exit status $exited. Generated build: $directory")
+    if (buildSimulator) {
+      if (!isSimulatorExecutable(simulator.executable))
+        throw new ResolutionException(s"Chipyard did not produce the simulator: ${simulator.executable}")
+      val record = Seq(experiment.get, simulator.packageName, toolchainRoot.toString).mkString("", "\n", "\n")
+      FilesSupport.writeAtomically(directory.resolve(simulatorMarker), record.getBytes(UTF_8))
+      info(s"Verilator simulator: ${simulator.executable}")
+    }
+    directory
+  }
+
+  /** Finds a completed simulator for the exact sources, verified lock, and tool versions in use. */
+  def findSimulator(workspace: Path, target: Path, resolution: Resolution, experiment: String, toolchain: Path): Path = {
+    val builds = target.toAbsolutePath.normalize().resolve("hardware/builds")
+    def missing = new ResolutionException(s"No matching simulator build. Run presolve build $experiment first.")
+    if (!Files.isDirectory(builds)) throw missing
+    val root = toolchain.toAbsolutePath.normalize()
+    val versions = toolVersions(root, toolEnvironment(root), buildPlatform(resolution).toolchain, standalone = false)
+    val fingerprint = withStaging(builds) { staging =>
+      prepareSources(workspace, staging, resolution, Some(experiment), versions, "verilator-build", _ => ()).fingerprint
+    }
+    val matching = builds.resolve(fingerprint)
+    if (!Files.isDirectory(matching)) throw missing
+    val entries = Files.list(matching)
+    try {
+      entries.iterator().asScala.filter(path => completedSimulator(path, experiment).isDefined)
+        .toVector.sortBy(path => (Files.getLastModifiedTime(path.resolve(simulatorMarker)).toInstant, path.toString))
+        .lastOption.getOrElse(throw missing)
+    } finally entries.close()
+  }
+
+  /** Runs a completed simulator with its recorded toolchain and writes independent payload and log artifacts. */
+  def simulate(workspace: Path, target: Path, experiment: String, payload: Path, build: Path,
+      info: String => Unit, warn: String => Unit): Path = {
+    val buildDirectory = workspace.resolve(build).toAbsolutePath.normalize()
+    val simulator = completedSimulator(buildDirectory, experiment).getOrElse(
+      throw new ResolutionException(s"No completed simulator build for '$experiment' at $buildDirectory."))
+    val original = workspace.resolve(payload).toAbsolutePath.normalize()
+    if (!Files.isRegularFile(original)) throw new ResolutionException(s"Missing simulation payload: $original")
+    val runs = target.toAbsolutePath.normalize().resolve("hardware/runs")
+    checkMakePaths(buildDirectory, simulator.toolchain, runs)
+    val directory = runs.resolve(UUID.randomUUID().toString)
+    val binary = directory.resolve(simulationBinary)
+    Files.createDirectories(binary.getParent)
+    Files.copy(original, binary)
+    val manifest = ResolutionFiles.obj(Vector(
+      "schemaVersion" -> "1",
+      "experiment" -> ResolutionFiles.string(experiment),
+      "backend" -> ResolutionFiles.string("verilator-simulate"),
+      "buildDirectory" -> ResolutionFiles.string(buildDirectory.toString),
+      "payload" -> ResolutionFiles.obj(Vector(
+        "file" -> ResolutionFiles.string(original.getFileName.toString),
+        "sha256" -> ResolutionFiles.string(FilesSupport.hex(FilesSupport.fileDigest(binary, new Array[Byte](65536)))),
+        "randomSeed" -> "1"))
+    ))
+    ResolutionFiles.writeJson(directory.resolve("run.json"), manifest)
+
+    info(s"Using Chipyard build: $buildDirectory")
+    info(s"Generated Chipyard run: $directory")
+    val command = makeCommand(simulator, jobs = 1) ++ Vector(
+      "run-binary-fast", "BREAK_SIM_PREREQ=1", "SIM_PREREQ=", s"sim=${simulator.executable}",
+      s"output_dir=${directory.resolve("output")}", s"BINARY=$binary", "RANDOM_SEED=1")
+    val exited = Process(withoutEnvironment(inheritedBuildOverrides) ++ command,
+      buildDirectory.resolve(simulatorDirectory).toFile, toolEnvironment(simulator.toolchain): _*)
+      .!(ProcessLogger(info, warn))
+    if (exited != 0)
+      throw new ResolutionException(s"Chipyard $experiment failed with exit status $exited. Generated run: $directory")
+    directory
+  }
+
+  private def completedSimulator(directory: Path, experiment: String): Option[SimulatorBuild] = {
+    val marker = directory.resolve(simulatorMarker)
+    if (!Files.isRegularFile(marker) || !Files.isRegularFile(directory.resolve("run.json"))) return None
+    Files.readAllLines(marker, UTF_8).asScala.toList match {
+      case `experiment` :: namespace :: toolchain :: Nil
+          if namespace.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*") &&
+            toolchain.matches(makePath) && Paths.get(toolchain).isAbsolute =>
+        val build = SimulatorBuild(directory, namespace, Paths.get(toolchain))
+        Option(build).filter(candidate => isSimulatorExecutable(candidate.executable))
+      case _ => None
+    }
+  }
+
+  private def isSimulatorExecutable(path: Path): Boolean = Files.isRegularFile(path) && Files.isExecutable(path)
+
+  private def makeCommand(build: SimulatorBuild, jobs: Int): Vector[String] =
+    Vector(build.toolchain.resolve("bin/make").toString, s"-j$jobs", "SBT_PROJECT=hardwareSystem",
+      s"FIRTOOL_BIN=${build.toolchain.resolve("riscv-tools/bin/firtool")}",
+      s"CXX=${build.toolchain.resolve("bin/g++")}",
+      "GENERATOR_PACKAGE=chipyard", s"CONFIG_PACKAGE=${build.packageName}", "CONFIG=System")
+
+  private def checkMakePaths(paths: Path*): Unit =
+    if (paths.exists(path => !path.toString.matches(makePath)))
+      throw new ResolutionException("Chipyard's Make flow requires build, toolchain and cache paths without whitespace or shell metacharacters.")
+
+  private def withStaging[A](builds: Path)(operation: Path => A): A = {
+    Files.createDirectories(builds)
+    val staging = Files.createTempDirectory(builds, ".prepare-")
+    try operation(staging)
+    finally if (Files.exists(staging)) FilesSupport.deleteTree(staging)
+  }
+
+  private def buildPlatform(resolution: Resolution): PlatformRecipe = resolution.platform.getOrElse(
+    throw new ResolutionException("Set chipyardVersion before elaborating hardware."))
+
+  private def prepareSources(workspace: Path, checkout: Path, resolution: Resolution, experiment: Option[String],
+      versions: Vector[(String, String)], backend: String, info: String => Unit): PreparedBuild = {
     val entry = experiment.map { name =>
       if (!name.matches(experimentName))
         throw new ResolutionException(s"Invalid experiment name '$name'.")
@@ -50,130 +208,65 @@ object ChipyardBuild {
     val buildName = experiment.getOrElse("standalone")
     val entryFile = if (standalone) "Standalone.scala" else "System.scala"
     val nodes = resolution.nodes.sortBy(_.id)
-    val platformSources = nodes.find(_.id == "chipyard").map(_.source).collect { case git: ResolvedGit => git }
-      .getOrElse(throw new ResolutionException("The verified resolution is missing the Chipyard checkout."))
-    val binaries = payload.map(workspace.resolve(_).toAbsolutePath.normalize())
-    binaries.foreach { binary =>
-      if (!Files.isRegularFile(binary)) throw new ResolutionException(s"Missing simulation payload: $binary")
-    }
-
-    val toolchainRoot = toolchain.toAbsolutePath.normalize()
-    val builds = target.toAbsolutePath.normalize().resolve("hardware/builds")
-    val sourceCache = cacheDirectory.toAbsolutePath.normalize()
-    if (Seq(toolchainRoot, builds, sourceCache).exists(path => !path.toString.matches(makePath)))
-      throw new ResolutionException("Chipyard's Make flow requires build, toolchain and cache paths without whitespace or shell metacharacters.")
-    val environment = toolEnvironment(toolchainRoot)
-    val versions = toolVersions(toolchainRoot, environment, platform.toolchain, standalone)
     val lockFingerprint = ResolutionFiles.lockFingerprint(resolution)
-
-    Files.createDirectories(builds)
-    val staging = Files.createTempDirectory(builds, ".prepare-")
-    val (runDirectory, packageName) = try {
-      val checkout = staging.resolve("chipyard")
-      val git = new GitCache(sourceCache)
-      git.copyCheckout(platformSources.checkout, checkout)
-      platformSources.submodules.foreach { case (path, source) => git.copyCheckout(source, checkout.resolve(path)) }
-
-      val generated = checkout.resolve("generators/hardware-workspace")
-      val system = generated.resolve("system")
-      copySourceTree(workspace.resolve(mainSources), system.resolve(mainSources))
-      val owner = SourceSelection.Project("workspace", workspace, system)
-      val entryTarget = system.resolve("experiment").resolve(entryFile)
-      Files.createDirectories(entryTarget.getParent)
-      val selected = entry.map { path =>
-        copySourceTree(path.getParent, entryTarget.getParent)
-        SourceSelection.ScalaSource(entryTarget, FilesSupport.portable(workspace.relativize(path)))
-      }
-      val entryPackage = if (standalone) {
-        val namespace = SourceSelection.entryPackage(SourceSelection.moduleEntry(owner), "Module", module = true)
-        Files.write(entryTarget, standaloneDriver(namespace).getBytes(UTF_8))
-        namespace
-      } else SourceSelection.entryPackage(selected.get, "System", module = false)
-
-      val experimentSources = entry.toVector.flatMap { path =>
-        val directory = entryTarget.getParent
-        SourceSelection.scalaFiles(directory).map { source =>
-          val relative = workspace.relativize(path.getParent).resolve(directory.relativize(source))
-          SourceSelection.ScalaSource(source, FilesSupport.portable(relative))
-        }
-      }
-      val dependencies = new BuildDependencies(nodes, resolution.roots, generated)
-      val selection = SourceSelection.plan(
-        owner +: dependencies.initialProjects, experimentSources, dependencies.materializeIntegration,
-        activate = dependencies.activateImport, aliasProjects = dependencies.aliasProjects)
-      val external = dependencies.activeNodes.filter(isSourceProject)
-      external.foreach { node =>
-        node.source match {
-          case local: ResolvedLocal
-              if LocalInputs.resolve(workspace, local.directory).fingerprint != local.fingerprint =>
-            throw new ResolutionException(s"Local dependency '${node.id}' changed while preparing the build. Run hardwareResolve.")
-          case _ =>
-        }
-      }
-      selection.units.foreach { case (unit, reason) =>
-        reason.foreach(by => info(s"Selected ${unit.packageName} via ${by.source}:${by.line} (${by.imported})"))
-      }
-      val overlay = sbtProjects(dependencies.activeNodes, external, dependencies.systemDependencies,
-        selection.selected, owner, external.map(node => dependencies.projects(node.id)))
-      Files.write(checkout.resolve("build.sbt"), overlay.getBytes(UTF_8), StandardOpenOption.APPEND)
-      val buildFingerprint = digest(Seq(lockFingerprint, buildName, entryPackage, overlay,
-        LocalInputs.resolve(checkout, generated).fingerprint) ++ versions.map { case (tool, version) => s"$tool=$version" })
-
-      val binary = binaries.map { original =>
-        val copied = staging.resolve(simulationBinary)
-        Files.createDirectories(copied.getParent)
-        Files.copy(original, copied)
-        original -> copied
-      }
-      val mode = if (standalone) "circt-standalone" else if (binary.isDefined) "verilator-simulate" else "verilator-elaborate"
-      val symbol = if (standalone) "Module" else "System"
-      val manifest = ResolutionFiles.obj(Vector(
-        "schemaVersion" -> "1",
-        "experiment" -> experiment.map(ResolutionFiles.string).getOrElse("null"),
-        "configuration" -> ResolutionFiles.string(s"$entryPackage.$symbol"),
-        "recipe" -> ResolutionFiles.string(platform.id),
-        "backend" -> ResolutionFiles.string(mode),
-        "lockFingerprint" -> ResolutionFiles.string(lockFingerprint),
-        "buildFingerprint" -> ResolutionFiles.string(buildFingerprint),
-        "toolchain" -> ResolutionFiles.obj(versions.map { case (name, version) => name -> ResolutionFiles.string(version) }),
-        "sourceSelection" -> selection.json,
-        "aliases" -> dependencies.aliasManifest,
-        "payload" -> binary.map { case (original, copied) => ResolutionFiles.obj(Vector(
-          "file" -> ResolutionFiles.string(original.getFileName.toString),
-          "sha256" -> ResolutionFiles.string(FilesSupport.hex(FilesSupport.fileDigest(copied, new Array[Byte](65536)))),
-          "randomSeed" -> "1"
-        )) }.getOrElse("null")
-      ))
-      ResolutionFiles.writeJson(staging.resolve("run.json"), manifest)
-      val destination = builds.resolve(buildFingerprint).resolve(UUID.randomUUID().toString)
-      Files.createDirectories(destination.getParent)
-      Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE) -> entryPackage
-    } finally {
-      if (Files.exists(staging)) FilesSupport.deleteTree(staging)
+    val generated = checkout.resolve("generators/hardware-workspace")
+    val system = generated.resolve("system")
+    copySourceTree(workspace.resolve(mainSources), system.resolve(mainSources))
+    val owner = SourceSelection.Project("workspace", workspace, system)
+    val entryTarget = system.resolve("experiment").resolve(entryFile)
+    Files.createDirectories(entryTarget.getParent)
+    val selected = entry.map { path =>
+      copySourceTree(path.getParent, entryTarget.getParent)
+      SourceSelection.ScalaSource(entryTarget, FilesSupport.portable(workspace.relativize(path)))
     }
+    val entryPackage = if (standalone) {
+      val namespace = SourceSelection.entryPackage(SourceSelection.moduleEntry(owner), "Module", module = true)
+      Files.write(entryTarget, standaloneDriver(namespace).getBytes(UTF_8))
+      namespace
+    } else SourceSelection.entryPackage(selected.get, "System", module = false)
 
-    val settings = makeEnvironment(runDirectory, sourceCache, jobs, environment)
-    val simulation = binaries.map(_ => runDirectory.resolve(simulationBinary))
-    val checkout = runDirectory.resolve("chipyard")
-    val firtool = toolchainRoot.resolve("riscv-tools/bin/firtool")
-    val command = if (standalone) {
-      val rtl = Files.createDirectories(runDirectory.resolve("rtl"))
-      Vector(toolchainRoot.resolve("bin/java").toString, "-jar", checkout.resolve("scripts/sbt-launch.jar").toString) ++
-        sbtOptions(runDirectory, sourceCache) :+ s"hardwareSystem/runMain $standaloneMain $rtl $firtool"
-    } else Vector(
-      toolchainRoot.resolve("bin/make").toString, s"-j$jobs", "SBT_PROJECT=hardwareSystem",
-      s"FIRTOOL_BIN=$firtool",
-      s"CXX=${toolchainRoot.resolve("bin/g++")}",
-      "GENERATOR_PACKAGE=chipyard", s"CONFIG_PACKAGE=$packageName", "CONFIG=System") ++
-      simulation.map(path => Vector("run-binary-fast", s"BINARY=$path", "RANDOM_SEED=1")).getOrElse(Vector("verilog"))
-
-    info(s"Generated Chipyard build: $runDirectory")
-    val directory = if (standalone) checkout else checkout.resolve("sims/verilator")
-    val exited = Process(withoutEnvironment(inheritedBuildOverrides) ++ command, directory.toFile, settings: _*)
-      .!(ProcessLogger(info, warn))
-    if (exited != 0)
-      throw new ResolutionException(s"Chipyard $buildName failed with exit status $exited. Generated build: $runDirectory")
-    runDirectory
+    val experimentSources = entry.toVector.flatMap { path =>
+      val directory = entryTarget.getParent
+      SourceSelection.scalaFiles(directory).map { source =>
+        val relative = workspace.relativize(path.getParent).resolve(directory.relativize(source))
+        SourceSelection.ScalaSource(source, FilesSupport.portable(relative))
+      }
+    }
+    val dependencies = new BuildDependencies(nodes, resolution.roots, generated)
+    val selection = SourceSelection.plan(
+      owner +: dependencies.initialProjects, experimentSources, dependencies.materializeIntegration,
+      activate = dependencies.activateImport, aliasProjects = dependencies.aliasProjects)
+    val external = dependencies.activeNodes.filter(isSourceProject)
+    external.foreach { node =>
+      node.source match {
+        case local: ResolvedLocal
+            if LocalInputs.resolve(workspace, local.directory).fingerprint != local.fingerprint =>
+          throw new ResolutionException(s"Local dependency '${node.id}' changed while preparing the build. Run hardwareResolve.")
+        case _ =>
+      }
+    }
+    selection.units.foreach { case (unit, reason) =>
+      reason.foreach(by => info(s"Selected ${unit.packageName} via ${by.source}:${by.line} (${by.imported})"))
+    }
+    val overlay = sbtProjects(dependencies.activeNodes, external, dependencies.systemDependencies,
+      selection.selected, owner, external.map(node => dependencies.projects(node.id)))
+    val fingerprint = digest(Seq(lockFingerprint, buildName, entryPackage, overlay,
+      LocalInputs.resolve(checkout, generated).fingerprint) ++ versions.map { case (tool, version) => s"$tool=$version" })
+    val symbol = if (standalone) "Module" else "System"
+    val manifest = ResolutionFiles.obj(Vector(
+      "schemaVersion" -> "1",
+      "experiment" -> experiment.map(ResolutionFiles.string).getOrElse("null"),
+      "configuration" -> ResolutionFiles.string(s"$entryPackage.$symbol"),
+      "recipe" -> ResolutionFiles.string(buildPlatform(resolution).id),
+      "backend" -> ResolutionFiles.string(backend),
+      "lockFingerprint" -> ResolutionFiles.string(lockFingerprint),
+      "buildFingerprint" -> ResolutionFiles.string(fingerprint),
+      "toolchain" -> ResolutionFiles.obj(versions.map { case (name, version) => name -> ResolutionFiles.string(version) }),
+      "sourceSelection" -> selection.json,
+      "aliases" -> dependencies.aliasManifest,
+      "payload" -> "null"
+    ))
+    PreparedBuild(fingerprint, entryPackage, overlay, manifest)
   }
 
   private def standaloneDriver(namespace: String): String =

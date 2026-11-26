@@ -1,5 +1,7 @@
 package chipyard.generator
 
+import java.nio.file.{Files, Paths}
+import java.util.Locale
 import sbt.{Resolver => _, _}
 import sbt.Keys._
 import sbt.complete.DefaultParsers.spaceDelimited
@@ -18,7 +20,8 @@ object ChipyardPlugin extends AutoPlugin {
     val hardwareBuildJobs = settingKey[Int]("Parallel jobs for the generated Chipyard build.")
     val hardwareElaborate = inputKey[File]("Elaborate one experiment to Verilog. Usage: hardwareElaborate <experiment>")
     val hardwareElaborateStandalone = inputKey[File]("Elaborate the workspace Module without a system.")
-    val hardwareSimulate = inputKey[File]("Run an ELF with Verilator. Usage: hardwareSimulate <experiment> <binary>")
+    val hardwareBuildSimulator = inputKey[File]("Build a Verilator simulator. Usage: hardwareBuildSimulator <experiment>")
+    val hardwareSimulate = inputKey[File]("Run an ELF. Usage: hardwareSimulate <experiment> <binary> [--build <build-dir>]")
   }
 
   import autoImport._
@@ -26,7 +29,7 @@ object ChipyardPlugin extends AutoPlugin {
   private val hardwareResolution = taskKey[Resolution]("Evaluate the resolved hardware dependency graph.")
   private sealed abstract class BuildCommand(val name: String, val arguments: List[String])
   private case object Elaborate extends BuildCommand("hardwareElaborate", List("<experiment>"))
-  private case object Simulate extends BuildCommand("hardwareSimulate", List("<experiment>", "<binary>"))
+  private case object BuildSimulator extends BuildCommand("hardwareBuildSimulator", List("<experiment>"))
   private case object Standalone extends BuildCommand("hardwareElaborateStandalone", Nil)
 
   override def trigger = noTrigger
@@ -41,7 +44,11 @@ object ChipyardPlugin extends AutoPlugin {
       cacheHome / "hardware-generators"
     },
     hardwareOffline := offline.value,
-    hardwareChipyardToolchain := sys.env.get("CHIPYARD_TOOLCHAIN_PREFIX").filter(_.nonEmpty).map(file),
+    hardwareChipyardToolchain := {
+      val revision = chipyardVersion.value
+      sys.env.get("CHIPYARD_TOOLCHAIN_PREFIX").filter(_.nonEmpty).map(file)
+        .orElse(installedToolchain(revision))
+    },
     hardwareBuildJobs := math.min(12, java.lang.Runtime.getRuntime.availableProcessors()),
     hardwareResolution := {
       val workspace = baseDirectory.value.toPath
@@ -57,9 +64,27 @@ object ChipyardPlugin extends AutoPlugin {
     hardwareResolve := writeResolution(updateLock = true).value,
     hardwareVerify := writeResolution(updateLock = false).value,
     hardwareElaborate := build(Elaborate).evaluated,
-    hardwareSimulate := build(Simulate).evaluated,
+    hardwareBuildSimulator := build(BuildSimulator).evaluated,
+    hardwareSimulate := simulate.evaluated,
     hardwareElaborateStandalone := build(Standalone).evaluated
   )
+
+  private def installedToolchain(revision: String): Option[File] =
+    Option(revision).filter(_.matches("[0-9a-fA-F]{40}")).flatMap { commit =>
+      val dataHome = sys.env.get("XDG_DATA_HOME").filter(_.nonEmpty).map(file)
+        .getOrElse(file(sys.env.getOrElse("HOME", sys.props("user.home"))) / ".local" / "share")
+      val prefix = dataHome / "presolve" / s"chipyard-${commit.toLowerCase(Locale.ROOT)}" / ".conda-env"
+      val root = prefix.toPath
+      val executables = Seq("bin/java", "bin/make", "bin/g++", "bin/verilator", "lib/jvm/bin/java",
+        "riscv-tools/bin/firtool")
+      val libraries = Seq("riscv-tools/lib/libfesvr.a", "riscv-tools/lib/libfesvr.so")
+      val hasExecutables = executables.forall { name =>
+        val executable = root.resolve(name)
+        Files.isRegularFile(executable) && Files.isExecutable(executable)
+      }
+      val hasLibrary = libraries.exists(name => Files.isRegularFile(root.resolve(name)))
+      if (hasExecutables && hasLibrary) Some(prefix) else None
+    }
 
   private def writeResolution(updateLock: Boolean): Def.Initialize[Task[File]] = Def.task {
     val workspace = baseDirectory.value.toPath
@@ -90,8 +115,39 @@ object ChipyardPlugin extends AutoPlugin {
       ResolutionFiles.write(workspace, output, resolution, updateLock = false)
       val prefix = toolchain.getOrElse(throw new MessageOnlyException(
         "Set CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain to the Chipyard toolchain prefix."))
-      ChipyardBuild.run(workspace, output, cache, resolution, args.headOption, prefix.toPath, jobs,
-        args.lift(1).map(java.nio.file.Paths.get(_)), line => log.info(line), line => log.warn(line)).toFile
+      ChipyardBuild.build(workspace, output, cache, resolution, args.headOption, prefix.toPath, jobs,
+        command == BuildSimulator, line => log.info(line), line => log.warn(line)).toFile
+    }
+  }
+
+  private def simulate: Def.Initialize[InputTask[File]] = Def.inputTaskDyn {
+    spaceDelimited("<argument>").parsed.toList match {
+      case experiment :: payload :: Nil => Def.task {
+        val workspace = baseDirectory.value.toPath
+        val output = target.value.toPath
+        val resolution = hardwareResolution.value
+        val toolchain = hardwareChipyardToolchain.value
+        val log = streams.value.log
+        reportErrors {
+          ResolutionFiles.write(workspace, output, resolution, updateLock = false)
+          val prefix = toolchain.getOrElse(throw new MessageOnlyException(
+            "Set CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain to the Chipyard toolchain prefix."))
+          val build = ChipyardBuild.findSimulator(workspace, output, resolution, experiment, prefix.toPath)
+          ChipyardBuild.simulate(workspace, output, experiment, Paths.get(payload), build,
+            line => log.info(line), line => log.warn(line)).toFile
+        }
+      }
+      case experiment :: payload :: "--build" :: build :: Nil => Def.task {
+        val workspace = baseDirectory.value.toPath
+        val output = target.value.toPath
+        val log = streams.value.log
+        reportErrors {
+          ChipyardBuild.simulate(workspace, output, experiment, Paths.get(payload), Paths.get(build),
+            line => log.info(line), line => log.warn(line)).toFile
+        }
+      }
+      case _ => throw new MessageOnlyException(
+        "Usage: hardwareSimulate <experiment> <binary> [--build <build-dir>]")
     }
   }
 

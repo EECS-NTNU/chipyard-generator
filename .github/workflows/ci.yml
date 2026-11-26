@@ -30,7 +30,7 @@ jobs:
       - name: Publish locally and run resolver checks
         run: |
           sbt -batch publishLocal \
-            'resolver/Test/runMain chipyard.generator.MilestoneOneChecks' \
+            'resolver/Test/runMain chipyard.generator.ResolverChecks' \
             'resolver/Test/runMain chipyard.generator.SourceSelectionChecks' \
             'resolver/Test/runMain chipyard.generator.AliasNamespaceChecks'
 
@@ -45,29 +45,31 @@ jobs:
           for fixture in local git; do
             (
               cd "$workspaces/$fixture"
+              printf 'Resolves the %s workspace and reproduces its lockfile.\n' "$fixture"
               if [[ $fixture == git ]]; then ./prepare.sh; fi
               sbt -batch hardwareResolve
               cp hardware.lock "$workspaces/$fixture.expected-lock"
               sbt -batch hardwareResolve hardwareVerify
               cmp "$workspaces/$fixture.expected-lock" hardware.lock
               if [[ $fixture == git ]]; then
+                printf '%s\n' 'Verifies the pinned Git workspace from the offline cache.'
                 sbt -batch 'set hardwareOffline := true' hardwareVerify
                 cmp "$workspaces/$fixture.expected-lock" hardware.lock
               fi
             )
           done
 
-  milestone-integration:
-    name: ${{ matrix.milestone }} integration tests
+  hardware-acceptance:
+    name: ${{ matrix.suite }} acceptance tests
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        milestone: [m0, m2, m3, m4, m5, m6]
+        suite: [rocket-reference, workspace-builds, source-selection, generator-aliases, generator-simulation, rtl-integration]
     env:
-      MILESTONE: ${{ matrix.milestone }}
+      ACCEPTANCE_SUITE: ${{ matrix.suite }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -76,29 +78,29 @@ jobs:
       - name: Prepare the pinned Chipyard toolchain
         shell: bash
         run: |
-          work="$RUNNER_TEMP/milestones"
+          work="$RUNNER_TEMP/acceptance"
           mkdir -p "$work/artifacts" "$work/home" "$work/cache"
           {
             df -h "$RUNNER_TEMP" /var/lib/docker
             free -h
           } | tee "$work/artifacts/runner-resources.log"
-          docker build --progress=plain --target milestone-ci -t chipyard-milestone-ci . \
+          docker build --progress=plain --target acceptance-ci -t chipyard-acceptance-ci . \
             2>&1 | tee "$work/artifacts/toolchain-build.log"
 
-      - name: Run milestone acceptance tests
+      - name: Run hardware acceptance tests
         shell: bash
         run: |
-          work="$RUNNER_TEMP/milestones"
+          work="$RUNNER_TEMP/acceptance"
           docker run --rm --user "$(id -u):$(id -g)" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/repo,readonly" \
             --mount "type=bind,source=$work,target=/work" \
-            chipyard-milestone-ci bash "/repo/tests/milestones/$MILESTONE.sh" \
-            2>&1 | tee "$work/artifacts/milestone.log"
+            chipyard-acceptance-ci bash "/repo/tests/acceptance/$ACCEPTANCE_SUITE.sh" \
+            2>&1 | tee "$work/artifacts/acceptance.log"
 
-      - name: Upload milestone evidence
+      - name: Upload acceptance test artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.milestone }}-evidence
-          path: ${{ runner.temp }}/milestones/artifacts/
+          name: ${{ matrix.suite }}-results
+          path: ${{ runner.temp }}/acceptance/artifacts/
           if-no-files-found: warn

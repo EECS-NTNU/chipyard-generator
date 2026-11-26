@@ -38,34 +38,50 @@ object SourceSelectionChecks {
       SourceSelection.plan(owners, Vector(SourceSelection.ScalaSource(entry, "config/Probe.scala")), _ => ())
     }
 
+    println("Selects a named integration and follows grouped and renamed imports into a dependency.")
     val selected = plan(new String(Files.readAllBytes(config), UTF_8))
     val reasons = selected.units.collect { case (source, Some(reason)) => source.packageName -> reason }.toMap
     assert(reasons.keySet == Set("example.integrations.active", "dependency.integrations.leaf"))
     assert(reasons("example.integrations.active").line == 4)
     assert(reasons("dependency.integrations.leaf").source.endsWith("Unit.scala"))
     assert(selected.sources.exists(_.endsWith(helper.getFileName.toString)))
-    assert(selected.units.exists { case (source, reason) => source.name == "broken" && reason.isEmpty })
 
+    println("Ignores import-like comments and strings and skips the broken integration they name.")
+    val baseline = plan("package example\nclass System")
+    assert(baseline.selected.isEmpty)
+    assert(baseline.units.exists { case (source, reason) => source.name == "broken" && reason.isEmpty })
+    assert(!baseline.sources.exists(_.contains("integrations/broken/")))
+
+    println("Finds the named packages of the canonical module object and system class.")
     assert(SourceSelection.entryPackage(workspace.source(config), "System", module = false) == "example")
     assert(SourceSelection.entryPackage(SourceSelection.moduleEntry(workspace), "Module", module = true) == "example")
+
+    println("Selects an integration through a named import of its package.")
     assert(plan("package example\nimport example.integrations.active")
       .selected.map(_.name).toSet == Set("active", "leaf"))
+
+    println("Uses the most specific matching integration package for a nested import.")
     assert(plan("package example\nimport example.integrations.active.nested.integrations.inner.More")
       .selected.map(_.name) == Vector("inner"))
 
+    println("Rejects a wildcard as the sole selection signal for an optional integration.")
     expect("cannot select an optional integration") {
       plan("package example\nimport example.integrations.broken._")
     }
+    println("Reports the source path when a named import selects a malformed integration.")
     expect("integrations/broken") {
       plan("package example\nimport example.integrations.broken.Broken")
     }
+    println("Rejects ambiguous integration package mappings across projects.")
     val duplicate = project(temp, "duplicate", "example")
     unit(duplicate, "active", "package example.integrations.active\nobject Duplicate")
     expect("is ambiguous") {
       plan("package example", Vector(workspace, duplicate))
     }
     checkAliasActivation(temp, workspace, config)
-    println("Milestone 3 source selection checks passed.")
+    checkRecursiveSelection(temp)
+    checkEntryPoints(temp)
+    println("Source selection checks passed.")
   }
 
   private def checkAliasActivation(temp: Path, workspace: SourceSelection.Project, config: Path): Unit = {
@@ -90,6 +106,7 @@ object SourceSelectionChecks {
         aliases.map { case (namespace, project) => namespace -> project.id })
     }
 
+    println("Activates only aliases reached by named imports, including imports inside selected integrations.")
     val selected = plan("""import counter_baseline.integrations.adapter.Counter
       |import counter_baseline.integrations.adapter._
       |/* import unused.Module */
@@ -99,8 +116,49 @@ object SourceSelectionChecks {
     assert(selected.sources.contains("counter:src/main/scala/Module.scala"))
     assert(selected.sources.contains("filter:src/main/scala/Module.scala"))
     assert(!selected.sources.exists(_.startsWith("unused:")))
+    println("Rejects a wildcard as the sole selection signal for a generator alias.")
     expect("cannot select an aliased generator") {
       plan("import unused._")
+    }
+  }
+
+  private def checkRecursiveSelection(temp: Path): Unit = {
+    println("Follows an ordinary helper into a cycle and materializes each integration only once.")
+    val workspace = project(temp, "cycles", "cycles")
+    write(workspace.original.resolve("src/main/scala/Helper.scala"),
+      "package cycles\nimport cycles.integrations.first.First\nobject Helper")
+    unit(workspace, "first", "package cycles.integrations.first\n" +
+      "import cycles.integrations.second.Second\nobject First")
+    unit(workspace, "second", "package cycles.integrations.second\n" +
+      "import cycles.integrations.first.First\nobject Second")
+    unit(workspace, "unused", "package cycles.integrations.unused\nobject Unused {")
+
+    val materialized = Vector.newBuilder[String]
+    val plan = SourceSelection.plan(Vector(workspace), Vector.empty, unit => { materialized += unit.name })
+    assert(materialized.result() == Vector("first", "second"))
+    val reasons = plan.units.collect { case (unit, Some(reason)) => unit.name -> reason.source }.toMap
+    assert(reasons.keySet == Set("first", "second"))
+    assert(reasons("first").endsWith("/Helper.scala"))
+    assert(reasons("second").endsWith("integrations/first/src/main/scala/Unit.scala"))
+  }
+
+  private def checkEntryPoints(temp: Path): Unit = {
+    val root = temp.resolve("entry-points")
+    val workspace = SourceSelection.Project("entry-points", root, root)
+
+    println("Reports a missing canonical Module.scala file.")
+    expect("Found 0") { SourceSelection.moduleEntry(workspace) }
+
+    println("Reports multiple canonical Module.scala candidates.")
+    write(root.resolve("src/main/scala/first/Module.scala"), "package first\nobject Module")
+    write(root.resolve("src/main/scala/second/Module.scala"), "package second\nobject Module")
+    expect("Found 2") { SourceSelection.moduleEntry(workspace) }
+
+    println("Requires System.scala to declare its System class at the top level.")
+    val system = write(root.resolve("config/example/System.scala"),
+      "package example\nobject Holder { class System }")
+    expect("one top-level class System") {
+      SourceSelection.entryPackage(workspace.source(system), "System", module = false)
     }
   }
 

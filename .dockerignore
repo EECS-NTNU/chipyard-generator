@@ -18,5 +18,5 @@
 !containers/
 !containers/sbt-repositories
 !tests/
-!tests/milestones/
-!tests/milestones/install-toolchain.sh
+!tests/acceptance/
+!tests/acceptance/install-toolchain.sh

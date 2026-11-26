@@ -14,6 +14,7 @@ repo=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 stage="$repo/cli/target/stage"
 activation="$repo/cli/target/presolve-env.sh"
 revision=$(<"$repo/cli/src/main/resources/chipyard-revision")
+default_destination="${XDG_DATA_HOME:-$HOME/.local/share}/presolve/chipyard-$revision"
 toolchain=''
 
 step() { printf '\n%s\n' "$1"; }
@@ -60,19 +61,128 @@ use_toolchain() {
     toolchain=$prefix
 }
 
-install_toolchain() {
-    local conda_exe destination default_destination
+pinned_checkout() {
+    local checkout
+    checkout=$(CDPATH= cd -- "$1" 2>/dev/null && pwd -P) &&
+        [[ $(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) == "$checkout" &&
+           $(git -C "$checkout" rev-parse HEAD 2>/dev/null) == "$revision" ]] &&
+        printf '%s\n' "$checkout"
+}
+
+find_conda() {
+    local conda_exe
     if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
-        printf 'Automatic Chipyard toolchain installation is supported on Linux x86-64.\n' >&2
+        printf 'Automatic Chipyard toolchain setup is supported on Linux x86-64.\n' >&2
         return 1
     fi
     conda_exe=${CONDA_EXE:-$(type -P conda || true)}
     if [[ ! -x $conda_exe ]]; then
-        printf 'Install Conda and make it available on PATH, then select install again.\n' >&2
+        printf 'Install Conda and make it available on PATH, then retry setup.\n' >&2
         printf 'Conda instructions are linked from %s/reference/chipyard-rocket/README.md.\n' "$repo" >&2
         return 1
     fi
-    default_destination="${XDG_DATA_HOME:-$HOME/.local/share}/presolve/chipyard-$revision"
+    [[ $conda_exe == /* ]] || conda_exe="$PWD/$conda_exe"
+    printf '%s\n' "$conda_exe"
+}
+
+run_chipyard_setup() (
+    local checkout=$1 conda_exe=$2
+    cd -- "$checkout" &&
+        export CONDA_EXE="$conda_exe" PATH="$(dirname -- "$conda_exe"):$PATH" &&
+        ./build-setup.sh riscv-tools --skip-ctags --skip 5 --skip-firesim --skip-marshal --skip-clean
+)
+
+configure_checkout() {
+    local checkout=$1 choice
+    if use_toolchain "$checkout/.conda-env" >/dev/null 2>&1; then
+        printf 'Found the installed toolchain at %s.\n' "$toolchain"
+        return 0
+    fi
+    if [[ ! $checkout =~ ^[A-Za-z0-9_./+@-]+$ ]]; then
+        printf 'Choose an installation directory without spaces or shell metacharacters.\n' >&2
+        return 1
+    fi
+    printf 'Found an incomplete Chipyard toolchain at %s.\n' "$checkout"
+    while read -r -p 'Repair [r], remove and reinstall [f], or skip for now [s]? [s] ' choice; do
+        case $choice in
+            r|R) repair_checkout "$checkout"; return ;;
+            f|F) install_fresh_toolchain "$checkout" replace; return ;;
+            s|S|'') return 1 ;;
+            *) printf 'Enter r, f, or s.\n' ;;
+        esac
+    done
+    return 1
+}
+
+repair_checkout() {
+    local checkout=$1 conda_exe backup='' environment
+    confirm 'Attempt a repair by backing up leftover Conda directories and rerunning Chipyard setup?' || return 1
+    conda_exe=$(find_conda) || return 1
+
+    for environment in "$checkout/.conda-lock-env" "$checkout/.conda-env"; do
+        if [[ -e $environment || -L $environment ]]; then
+            if [[ -z $backup ]]; then
+                backup=$(mktemp -d "$checkout/.presolve-repair.XXXXXX") || return 1
+                printf 'Saving previous Conda directories in %s.\n' "$backup"
+            fi
+            mv -- "$environment" "$backup/" || return 1
+        fi
+    done
+
+    if run_chipyard_setup "$checkout" "$conda_exe" && use_toolchain "$checkout/.conda-env"; then
+        if [[ -n $backup ]] && ! rm -rf -- "$backup"; then
+            printf 'Could not remove the repair backup at %s.\n' "$backup" >&2
+        fi
+        printf 'Repaired the Chipyard toolchain at %s.\n' "$toolchain"
+    else
+        printf 'Toolchain repair did not complete. See the output above and any logs in %s.\n' "$checkout" >&2
+        if [[ -n $backup ]]; then printf 'Previous Conda directories are saved in %s.\n' "$backup" >&2; fi
+        return 1
+    fi
+}
+
+fetch_chipyard_checkout() {
+    local destination=$1
+    git -C "$destination" init &&
+        git -C "$destination" remote add origin https://github.com/ucb-bar/chipyard.git &&
+        git -C "$destination" fetch --depth=1 origin "$revision" &&
+        git -C "$destination" checkout --detach FETCH_HEAD
+}
+
+replace_chipyard_checkout() (
+    local destination=$1 replacement
+    replacement=$(mktemp -d "$destination.fresh.XXXXXX") || exit 1
+    trap 'rm -rf -- "$replacement"' EXIT
+    fetch_chipyard_checkout "$replacement" || exit 1
+    if [[ $(pinned_checkout "$destination") != "$destination" ]]; then
+        printf 'The checkout changed during setup. Review %s before retrying.\n' "$destination" >&2
+        exit 1
+    fi
+    rm -rf -- "$destination" && mv -T -- "$replacement" "$destination"
+)
+
+install_fresh_toolchain() {
+    local destination=$1 replace=${2:-} conda_exe
+    conda_exe=$(find_conda) || return 1
+    printf 'Chipyard setup downloads Conda packages and builds RISC-V tools in %s.\n' "$destination"
+    if [[ $replace == replace ]]; then
+        confirm "Permanently remove $destination and all its contents, then reinstall Chipyard here?" || return 1
+        replace_chipyard_checkout "$destination"
+    else
+        confirm 'Start the toolchain installation?' || return 1
+        mkdir -p -- "$(dirname -- "$destination")" &&
+            mkdir -- "$destination" &&
+            fetch_chipyard_checkout "$destination"
+    fi &&
+        run_chipyard_setup "$destination" "$conda_exe" &&
+        use_toolchain "$destination/.conda-env" || {
+        printf 'Toolchain installation did not complete. See the output above and any logs in %s.\n' "$destination" >&2
+        return 1
+    }
+}
+
+install_toolchain() {
+    local destination checkout
     read -r -p "Chipyard checkout directory [$default_destination]: " destination || return 1
     destination=${destination:-$default_destination}
     [[ $destination == /* ]] || destination="$PWD/$destination"
@@ -81,31 +191,14 @@ install_toolchain() {
         return 1
     fi
     if [[ -e $destination || -L $destination ]]; then
-        if [[ $(git -C "$destination" rev-parse --show-toplevel 2>/dev/null) == "$destination" &&
-              $(git -C "$destination" rev-parse HEAD 2>/dev/null) == "$revision" ]] &&
-              use_toolchain "$destination/.conda-env"; then
-            return 0
+        if checkout=$(pinned_checkout "$destination"); then
+            configure_checkout "$checkout"
+            return
         fi
         printf 'Installation directory already exists. Choose a new location or use an existing toolchain.\n' >&2
         return 1
     fi
-    printf 'Chipyard setup downloads Conda packages and builds RISC-V tools in %s.\n' "$destination"
-    confirm 'Start the toolchain installation?' || return 1
-    mkdir -p -- "$(dirname -- "$destination")" &&
-        mkdir -- "$destination" &&
-        git -C "$destination" init &&
-        git -C "$destination" remote add origin https://github.com/ucb-bar/chipyard.git &&
-        git -C "$destination" fetch --depth=1 origin "$revision" &&
-        git -C "$destination" checkout --detach FETCH_HEAD &&
-        (
-            cd -- "$destination" &&
-            export CONDA_EXE="$conda_exe" PATH="$(dirname -- "$conda_exe"):$PATH" &&
-            ./build-setup.sh riscv-tools --skip-ctags --skip 5 --skip-firesim --skip-marshal --skip-clean
-        ) &&
-        use_toolchain "$destination/.conda-env" || {
-        printf 'Toolchain installation did not complete. See the output above and any logs in %s.\n' "$destination" >&2
-        return 1
-    }
+    install_fresh_toolchain "$destination"
 }
 
 step '1/4 Check prerequisites'
@@ -125,6 +218,8 @@ printf 'Presolve is staged at %s.\n' "$stage"
 step '3/4 Configure the Chipyard toolchain'
 if [[ -n ${CHIPYARD_TOOLCHAIN_PREFIX:-} ]] && use_toolchain "$CHIPYARD_TOOLCHAIN_PREFIX"; then
     printf 'Found the configured toolchain at %s.\n' "$toolchain"
+elif checkout=$(pinned_checkout "$default_destination"); then
+    configure_checkout "$checkout" || true
 fi
 while [[ -z $toolchain ]]; do
     read -r -p 'Use an existing toolchain [e], install with Conda [i], or skip for now [s]? [s] ' choice || break
@@ -172,4 +267,4 @@ if [[ -n $workspace ]]; then
 else
     printf '  presolve create-project my-accelerator\n  cd my-accelerator\n'
 fi
-printf '  presolve resolve\n  presolve compile baseline\n  presolve run baseline ./program.elf\n'
+printf '  presolve resolve\n  presolve build baseline\n  presolve run baseline ./program.elf\n'
