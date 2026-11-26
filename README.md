@@ -130,7 +130,7 @@ Local source fingerprints include file contents and executable bits. The resolve
 
 ## Elaborate and simulate
 
-Use the toolchain prefix from the [M0 reference build](reference/chipyard-rocket/README.md). Set `CHIPYARD_TOOLCHAIN_PREFIX` or the sbt setting `hardwareChipyardToolchain` to that directory. In a Chipyard workspace, place a top-level class named `System` extending Chipyard `Config` in `config/<experiment>/System.scala` under a named Scala package. The generated build compiles that experiment directory, the workspace's `src/main`, the declared source projects, and any optional integration units selected by named imports.
+Use the toolchain prefix from the [M0 reference build](reference/chipyard-rocket/README.md). Set `CHIPYARD_TOOLCHAIN_PREFIX` or the sbt setting `hardwareChipyardToolchain` to that directory. In a Chipyard workspace, place a top-level class named `System` extending Chipyard `Config` in `config/<experiment>/System.scala` under a named Scala package. The generated build compiles that experiment directory, the workspace's `src/main`, ordinary source dependencies, and the generator aliases and optional integrations activated for the build.
 
 ```sh
 sbt hardwareResolve
@@ -140,7 +140,9 @@ sbt "hardwareSimulate baseline \"$PAYLOAD\""
 
 `PAYLOAD` is the path to a RISC-V ELF such as the one built by the M0 reference runner. The tasks verify the existing lock and print a fresh build directory under `target/hardware/builds/`. It contains the generated sbt build, RTL under `chipyard/sims/verilator/generated-src/`, and a `run.json` with the experiment, fingerprints, toolchain and payload identity. Generated directories are disposable. On clusters with a shared file-count quota, run from node-local scratch or set sbt's `target` to a separate scratch directory for each workspace.
 
-The source project recipe uses each dependency's `src/main` with the pinned platform's Scala and Chisel settings. Use `.requires(...)` for explicit project edges. The generated build supplies its own sbt definitions for these source projects. Multiple revisions of the same named generator can be resolved, but compiling them together requires the later namespace support.
+The source project recipe uses each dependency's `src/main` with the pinned platform's Scala and Chisel settings. Use `.requires(...)` for explicit project edges. The generated build supplies its own sbt definitions for these source projects.
+
+To compare revisions, declare each revision with a distinct alias that is a Scala package identifier. In each experiment, import a named package or symbol from the desired alias, such as `import boom_baseline.v3.common.WithNSmallBooms`. The generator must own a single top-level Scala package. The build replaces that package with the alias in its generated Scala sources and records the mapping and Git revision in `run.json`. A named import activates the revision and its declared dependencies. Each experiment can select one revision of a given generator. All experiments share the resolved graph, lockfile and cached source checkouts.
 
 The two build fixtures include observables named `LocalCounter` and `GitCounter` in their respective generated RTL. The local fixture also includes the stock baseline experiment.
 

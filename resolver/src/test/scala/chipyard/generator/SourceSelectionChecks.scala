@@ -64,7 +64,44 @@ object SourceSelectionChecks {
     expect("is ambiguous") {
       plan("package example", Vector(workspace, duplicate))
     }
+    checkAliasActivation(temp, workspace, config)
     println("Milestone 3 source selection checks passed.")
+  }
+
+  private def checkAliasActivation(temp: Path, workspace: SourceSelection.Project, config: Path): Unit = {
+    val counter = project(temp, "counter", "counter_baseline")
+    val filter = project(temp, "filter", "filter_experimental")
+    val inactive = project(temp, "unused", "unused")
+    unit(counter, "adapter", """package counter_baseline.integrations.adapter
+      |import _root_.filter_experimental.integrations.tap.{Signal => TapSignal}
+      |object Counter
+      |""".stripMargin)
+    unit(filter, "tap", "package filter_experimental.integrations.tap\nobject Signal")
+    write(inactive.staged.resolve("src/main/scala/Broken.scala"), "object Broken {")
+    val aliases = Map("counter_baseline" -> counter, "filter_experimental" -> filter, "unused" -> inactive)
+
+    def plan(imports: String) = {
+      val entry = write(config.resolveSibling("AliasProbe.scala"), s"package example\n$imports\nclass System")
+      SourceSelection.plan(
+        Vector(workspace),
+        Vector(SourceSelection.ScalaSource(entry, "config/AliasProbe.scala")),
+        _ => (),
+        (imported, _) => aliases.get(imported.takeWhile(_ != '.')).toVector,
+        aliases.map { case (namespace, project) => namespace -> project.id })
+    }
+
+    val selected = plan("""import counter_baseline.integrations.adapter.Counter
+      |import counter_baseline.integrations.adapter._
+      |/* import unused.Module */
+      |""".stripMargin)
+    assert(selected.selected.map(_.packageName) ==
+      Vector("counter_baseline.integrations.adapter", "filter_experimental.integrations.tap"))
+    assert(selected.sources.contains("counter:src/main/scala/Module.scala"))
+    assert(selected.sources.contains("filter:src/main/scala/Module.scala"))
+    assert(!selected.sources.exists(_.startsWith("unused:")))
+    expect("cannot select an aliased generator") {
+      plan("import unused._")
+    }
   }
 
   private def project(temp: Path, id: String, namespace: String): SourceSelection.Project = {

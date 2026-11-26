@@ -71,18 +71,27 @@ private[generator] object SourceSelection {
     }
   }
 
-  /** Follows named imports in active Scala sources. Materializes integrations only when selected. */
+  /** Follows named imports, materializing integrations and scanning newly activated projects. */
   def plan(projects: Vector[Project], extraSources: Vector[ScalaSource],
-      materialize: UnitSource => Unit): Plan = {
-    val units = projects.flatMap(integrations).sortBy(unit => (unit.packageName, unit.owner.id))
-    units.groupBy(_.packageName).toVector.sortBy(_._1).foreach { case (pkg, owners) =>
-      if (owners.size > 1)
-        throw new ResolutionException(s"Integration package '$pkg' is ambiguous: " +
-          owners.map(_.owner.id).sorted.mkString(", "))
-    }
-    val bySpecificity = units.sortBy(unit => -unit.packageName.length)
+      materialize: UnitSource => Unit,
+      activate: (String, Reason) => Vector[Project] = (_, _) => Vector.empty,
+      aliasProjects: Map[String, String] = Map.empty): Plan = {
+    val activeProjects = mutable.Set.empty[String]
+    val units = mutable.Map.empty[String, UnitSource]
 
-    val initial = projects.flatMap(project => scalaFiles(project.staged.resolve(scalaSources)).map(project.source))
+    def register(project: Project): Vector[ScalaSource] =
+      if (!activeProjects.add(project.id)) Vector.empty else {
+        integrations(project).foreach { unit =>
+          units.get(unit.packageName).foreach { other =>
+            val owners = Vector(other.owner.id, project.id).sorted.mkString(", ")
+            throw new ResolutionException(s"Integration package '${unit.packageName}' is ambiguous: $owners")
+          }
+          units(unit.packageName) = unit
+        }
+        scalaFiles(project.staged.resolve(scalaSources)).map(project.source)
+      }
+
+    val initial = projects.flatMap(register)
     val pending = mutable.Queue.empty[ScalaSource]
     pending ++= (initial ++ extraSources).sortBy(_.label)
     val selected = mutable.Map.empty[UnitSource, Reason]
@@ -108,7 +117,10 @@ private[generator] object SourceSelection {
             }
             name.foreach { imported =>
               val qualified = (prefix :+ imported).mkString(".")
-              bySpecificity.find(unit => within(qualified, unit.packageName))
+              val activated = activate(qualified, reason).flatMap(register)
+              pending ++= activated.sortBy(_.label)
+              units.valuesIterator.filter(unit => within(qualified, unit.packageName))
+                .toVector.sortBy(unit => -unit.packageName.length).headOption
                 .filterNot(selected.contains).foreach { unit =>
                   selected(unit) = reason
                   materialize(unit)
@@ -122,14 +134,20 @@ private[generator] object SourceSelection {
     }
 
     wildcards.result().foreach { case (prefix, reason) =>
-      val optional = units.filter(unit =>
+      val namespace = prefix.takeWhile(_ != '.')
+      if (aliasProjects.get(namespace).exists(id => !activeProjects(id)))
+        throw new ResolutionException(s"${reason.source}:${reason.line}: ${reason.imported} cannot select an " +
+          s"aliased generator. Import a named package or symbol from '$namespace'.")
+      val optional = units.valuesIterator.filter(unit =>
         within(prefix, unit.packageName) || (prefix.endsWith(".integrations") && within(unit.packageName, prefix)))
+        .toVector
       if (optional.nonEmpty && !optional.exists(selected.contains))
         throw new ResolutionException(s"${reason.source}:${reason.line}: ${reason.imported} cannot select an " +
           "optional integration. Import a named package or symbol.")
     }
 
-    Plan(active.result().distinct.sorted, units.map(unit => unit -> selected.get(unit)))
+    val plannedIntegrations = units.valuesIterator.toVector.sortBy(_.packageName).map(unit => unit -> selected.get(unit))
+    Plan(active.result().distinct.sorted, plannedIntegrations)
   }
 
   private def within(name: String, pkg: String): Boolean =
@@ -161,7 +179,7 @@ private[generator] object SourceSelection {
       finally files.close()
     }
 
-  private def parse(source: ScalaSource): ScalaTree =
+  def parse(source: ScalaSource): ScalaTree =
     dialects.Scala213(Input.VirtualFile(source.label, new String(Files.readAllBytes(source.path), UTF_8)))
       .parse[ScalaTree] match {
       case Parsed.Success(tree) => tree

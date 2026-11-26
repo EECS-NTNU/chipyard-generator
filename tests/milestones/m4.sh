@@ -90,14 +90,29 @@ run_case() {
     ' "$plan" >/dev/null
   fi
 
-  local experiment run step=0
+  local experiment run alias other_alias revision step=0
   for experiment in baseline experimental baseline experimental baseline; do
     step=$((step + 1))
+    alias="${fixture}_$experiment"
+    revision=$revision_a
+    other_alias="${fixture}_experimental"
+    if [[ $experiment == experimental ]]; then
+      revision=$revision_b
+      other_alias="${fixture}_baseline"
+    fi
     run_workspace "$workspace" "$step-$experiment" 'set hardwareOffline := true' "hardwareElaborate $experiment"
     run=$(generated_run "$step-$experiment")
     [[ -n $run && -f $run/run.json ]] || fail "Missing run manifest for $fixture/$experiment."
-    jq -e --arg experiment "$experiment" --arg lock "$lock_fingerprint" \
-      '.experiment == $experiment and .lockFingerprint == $lock' "$run/run.json" >/dev/null
+    jq -e --arg experiment "$experiment" --arg lock "$lock_fingerprint" --arg alias "$alias" \
+      --arg other "$other_alias" --arg generator "$fixture" --arg revision "$revision" '
+        .experiment == $experiment and .lockFingerprint == $lock
+        and (.aliases | length == 1 and any(
+          .alias == $alias and .generator == $generator and .originalPackage == $generator
+          and .package == $alias and .revision == $revision
+        ))
+        and (.sourceSelection.activeScalaSources
+          | any(startswith("dependency/" + $alias + ":")) and all(startswith("dependency/" + $other + ":") | not))
+      ' "$run/run.json" >/dev/null || fail "Unexpected alias selection in $fixture/$experiment run manifest."
     check_rtl "$fixture" "$experiment" "$run/chipyard/sims/verilator/generated-src"
     cmp hardware.lock "$MILESTONE_ARTIFACTS/hardware.lock"
     cmp "$plan" "$MILESTONE_ARTIFACTS/plan.json"
@@ -107,6 +122,28 @@ run_case() {
     check_cached_source "$source_b" "$revision_b"
     rm -rf -- "$run"
   done
+
+  if [[ $fixture == counter ]]; then
+    mkdir -p config/both
+    cat >config/both/System.scala <<'SCALA'
+package aliascounter
+
+import counter_baseline.{RevisionCounter => BaselineCounter}
+import counter_experimental.{RevisionCounter => ExperimentalCounter}
+
+class System extends chipyard.RocketConfig
+SCALA
+    if run_workspace "$workspace" both 'set hardwareOffline := true' 'hardwareElaborate both'; then
+      fail 'An experiment selected both counter revisions.'
+    fi
+    local diagnostic="$MILESTONE_ARTIFACTS/both.log"
+    grep -Fi 'only one revision' "$diagnostic" >/dev/null &&
+      grep -F 'counter_baseline' "$diagnostic" >/dev/null &&
+      grep -F 'counter_experimental' "$diagnostic" >/dev/null ||
+      fail 'Expected a diagnostic identifying both counter revisions.'
+    cmp hardware.lock "$MILESTONE_ARTIFACTS/hardware.lock"
+    cmp "$plan" "$MILESTONE_ARTIFACTS/plan.json"
+  fi
 }
 
 case ${1-} in

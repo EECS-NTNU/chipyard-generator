@@ -5,12 +5,14 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, LinkOption, Path, Paths, StandardCopyOption, StandardOpenOption}
 import java.util.UUID
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.sys.process.{Process, ProcessLogger}
 
 object ChipyardBuild {
   private val experimentName = "[A-Za-z0-9][A-Za-z0-9_-]*"
   private val makePath = "[A-Za-z0-9_./+@-]+"
   private val mainSources = Paths.get("src/main")
+  private val scalaSources = mainSources.resolve("scala")
   private val simulationBinary = "payload/program.elf"
   private val inheritedBuildOverrides = Vector("USE_CHISEL7", "SBT", "MAKEFILES", "CLASSPATH_CACHE",
     "GENERATOR_CLASSPATH", "TAPEOUT_CLASSPATH", "SUB_PROJECT", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
@@ -48,11 +50,6 @@ object ChipyardBuild {
     val buildName = experiment.getOrElse("standalone")
     val entryFile = if (standalone) "Standalone.scala" else "System.scala"
     val nodes = resolution.nodes.sortBy(_.id)
-    nodes.groupBy(_.name).toVector.sortBy(_._1).collectFirst {
-      case (name, instances) if instances.size > 1 => name
-    }.foreach { name =>
-      throw new ResolutionException(s"Building multiple instances of '$name' requires alias namespace support.")
-    }
     val platformSources = nodes.find(_.id == "chipyard").map(_.source).collect { case git: ResolvedGit => git }
       .getOrElse(throw new ResolutionException("The verified resolution is missing the Chipyard checkout."))
     val binaries = payload.map(workspace.resolve(_).toAbsolutePath.normalize())
@@ -93,24 +90,6 @@ object ChipyardBuild {
         namespace
       } else SourceSelection.entryPackage(selected.get, "System", module = false)
 
-      val external = nodes.filter(_.recipe.isEmpty)
-      val dependencies = external.map { node =>
-        val project = generated.resolve(node.id + "-source")
-        val main = node.source.directory.resolve(mainSources)
-        if (!Files.isDirectory(main))
-          throw new ResolutionException(s"Dependency '${node.id}' must provide src/main for the Chipyard source recipe.")
-        copySourceTree(main, project.resolve(mainSources))
-        node.source match {
-          case git: ResolvedGit =>
-            git.submodules.foreach { case (path, checkout) =>
-              val relative = Paths.get(path)
-              if (relative.startsWith(mainSources)) copySourceTree(checkout.directory, project.resolve(relative))
-            }
-          case _ =>
-        }
-        SourceSelection.Project(s"dependency/${node.id}", node.source.directory, project)
-      }
-
       val experimentSources = entry.toVector.flatMap { path =>
         val directory = entryTarget.getParent
         SourceSelection.scalaFiles(directory).map { source =>
@@ -118,10 +97,11 @@ object ChipyardBuild {
           SourceSelection.ScalaSource(source, FilesSupport.portable(relative))
         }
       }
-      val selection = SourceSelection.plan(owner +: dependencies, experimentSources, unit => {
-        val destination = unit.owner.staged.resolve(unit.relativeDirectory)
-        copySourceTree(unit.directory.resolve(mainSources), destination.resolve(mainSources))
-      })
+      val dependencies = new BuildDependencies(nodes, resolution.roots, generated)
+      val selection = SourceSelection.plan(
+        owner +: dependencies.initialProjects, experimentSources, dependencies.materializeIntegration,
+        activate = dependencies.activateImport, aliasProjects = dependencies.aliasProjects)
+      val external = dependencies.activeNodes.filter(isSourceProject)
       external.foreach { node =>
         node.source match {
           case local: ResolvedLocal
@@ -133,7 +113,8 @@ object ChipyardBuild {
       selection.units.foreach { case (unit, reason) =>
         reason.foreach(by => info(s"Selected ${unit.packageName} via ${by.source}:${by.line} (${by.imported})"))
       }
-      val overlay = sbtProjects(nodes, external, resolution.roots, selection.selected, owner, dependencies)
+      val overlay = sbtProjects(dependencies.activeNodes, external, dependencies.systemDependencies,
+        selection.selected, owner, external.map(node => dependencies.projects(node.id)))
       Files.write(checkout.resolve("build.sbt"), overlay.getBytes(UTF_8), StandardOpenOption.APPEND)
       val buildFingerprint = digest(Seq(lockFingerprint, buildName, entryPackage, overlay,
         LocalInputs.resolve(checkout, generated).fingerprint) ++ versions.map { case (tool, version) => s"$tool=$version" })
@@ -156,6 +137,7 @@ object ChipyardBuild {
         "buildFingerprint" -> ResolutionFiles.string(buildFingerprint),
         "toolchain" -> ResolutionFiles.obj(versions.map { case (name, version) => name -> ResolutionFiles.string(version) }),
         "sourceSelection" -> selection.json,
+        "aliases" -> dependencies.aliasManifest,
         "payload" -> binary.map { case (original, copied) => ResolutionFiles.obj(Vector(
           "file" -> ResolutionFiles.string(original.getFileName.toString),
           "sha256" -> ResolutionFiles.string(FilesSupport.hex(FilesSupport.fileDigest(copied, new Array[Byte](65536)))),
@@ -205,18 +187,123 @@ object ChipyardBuild {
        |}
        |""".stripMargin
 
+  private def aliasOf(node: ResolvedNode): Option[String] = node.alias.filter(_ != node.name)
+
+  private def isSourceProject(node: ResolvedNode): Boolean = node.recipe.isEmpty || aliasOf(node).nonEmpty
+
+  private final class BuildDependencies(nodes: Vector[ResolvedNode], roots: Vector[String], generated: Path) {
+    private val byId = nodes.map(node => node.id -> node).toMap
+    private val aliases = nodes.filter(node => aliasOf(node).nonEmpty).map(node => node.id -> node).toMap
+    private val active = mutable.Set.empty[String]
+    private val byName = mutable.Map.empty[String, String]
+    private val importedRoots = mutable.Set.empty[String]
+    private val originalPackages = mutable.Map.empty[String, String]
+    val projects = mutable.Map.empty[String, SourceSelection.Project]
+
+    val aliasProjects: Map[String, String] = aliases.keysIterator.map(id => id -> projectLabel(id)).toMap
+
+    def initialProjects: Vector[SourceSelection.Project] = activate(roots.filterNot(aliases.contains))
+
+    def activeNodes: Vector[ResolvedNode] = nodes.filter(node => active(node.id))
+
+    def systemDependencies: Vector[String] = (roots.filter(active) ++ importedRoots.toVector.sorted).distinct
+
+    def activateImport(qualified: String, reason: SourceSelection.Reason): Vector[SourceSelection.Project] = {
+      val alias = qualified.takeWhile(_ != '.')
+      if (!aliases.contains(alias)) Vector.empty
+      else {
+        if (!reason.source.startsWith("dependency/")) importedRoots += alias
+        activate(Vector(alias))
+      }
+    }
+
+    def materializeIntegration(unit: SourceSelection.UnitSource): Unit = {
+      val destination = unit.owner.staged.resolve(unit.relativeDirectory)
+      copySourceTree(unit.directory.resolve(mainSources), destination.resolve(mainSources))
+      val id = unit.owner.id.stripPrefix("dependency/")
+      if (unit.owner.id.startsWith("dependency/")) {
+        originalPackages.get(id).foreach(original => relocate(unit.owner, destination, original, id))
+      }
+    }
+
+    def aliasManifest: String = ResolutionFiles.array(activeNodes.filter(node => aliases.contains(node.id)).map { node =>
+      val revision = node.source match {
+        case git: ResolvedGit => ResolutionFiles.string(git.checkout.commit)
+        case _: ResolvedLocal => "null"
+      }
+      ResolutionFiles.obj(Vector(
+        "alias" -> ResolutionFiles.string(node.id),
+        "generator" -> ResolutionFiles.string(node.name),
+        "originalPackage" -> ResolutionFiles.string(originalPackages(node.id)),
+        "package" -> ResolutionFiles.string(node.id),
+        "revision" -> revision))
+    })
+
+    private def projectLabel(id: String): String = s"dependency/$id"
+
+    private def activate(ids: Vector[String]): Vector[SourceSelection.Project] = {
+      val added = Vector.newBuilder[SourceSelection.Project]
+      def include(id: String): Unit = if (active.add(id)) {
+        val node = byId(id)
+        byName.get(node.name).foreach { previous =>
+          throw new ResolutionException(s"Only one revision of generator '${node.name}' may be selected per experiment. " +
+            s"Selected dependency aliases '$previous' and '$id'.")
+        }
+        byName(node.name) = id
+        node.dependencies.foreach(include)
+        if (isSourceProject(node)) {
+          val project = stage(node)
+          projects(id) = project
+          added += project
+        }
+      }
+      ids.foreach(include)
+      added.result()
+    }
+
+    private def stage(node: ResolvedNode): SourceSelection.Project = {
+      val directory = generated.resolve(node.id + "-source")
+      val main = node.source.directory.resolve(mainSources)
+      if (!Files.isDirectory(main))
+        throw new ResolutionException(s"Dependency '${node.id}' must provide src/main for the Chipyard source recipe.")
+      copySourceTree(main, directory.resolve(mainSources))
+      node.source match {
+        case git: ResolvedGit =>
+          git.submodules.foreach { case (path, checkout) =>
+            val relative = Paths.get(path)
+            if (relative.startsWith(mainSources)) copySourceTree(checkout.directory, directory.resolve(relative))
+          }
+        case _: ResolvedLocal =>
+      }
+      val project = SourceSelection.Project(projectLabel(node.id), node.source.directory, directory)
+      aliasOf(node).foreach { namespace =>
+        AliasNamespace.validateAlias(namespace)
+        val sources = SourceSelection.scalaFiles(directory.resolve(scalaSources)).map(project.source)
+        val original = AliasNamespace.root(sources, project.id)
+        originalPackages(node.id) = original
+        sources.foreach(source => AliasNamespace.relocate(source, original, namespace))
+      }
+      project
+    }
+
+    private def relocate(project: SourceSelection.Project, directory: Path, original: String, namespace: String): Unit =
+      SourceSelection.scalaFiles(directory.resolve(scalaSources)).foreach { path =>
+        AliasNamespace.relocate(project.source(path), original, namespace)
+      }
+  }
+
   private def sbtProjects(nodes: Vector[ResolvedNode], external: Vector[ResolvedNode], roots: Vector[String],
       selected: Vector[SourceSelection.UnitSource], owner: SourceSelection.Project,
       externalOwners: Vector[SourceSelection.Project]): String = {
     val projects = nodes.map { node =>
-      val project = if (node.recipe.isEmpty) {
+      val project = if (isSourceProject(node)) {
         "hardwareSource_" + FilesSupport.sha256(node.id.getBytes(UTF_8)).take(16)
       } else builtInProjects(node.name)
       node.id -> project
     }.toMap
 
-    def depends(ids: Vector[String]): String =
-      if (ids.isEmpty) "" else ids.map(projects).mkString(".dependsOn(", ", ", ")")
+    def depends(projectIds: Vector[String]): String =
+      if (projectIds.isEmpty) "" else projectIds.mkString(".dependsOn(", ", ", ")")
 
     def integrationSettings(project: SourceSelection.Project): String =
       selected.filter(_.owner == project).map { unit =>
@@ -230,10 +317,14 @@ object ChipyardBuild {
 
     val dependencies = external.zip(externalOwners).map { case (node, projectOwner) =>
       val project = projects(node.id)
+      val declared = node.dependencies.map(projects)
+      // Chipyard builds the PMU's TileLink support as a separate sbt project.
+      val projectDependencies =
+        if (node.name == "boom" && declared.contains("pmu")) declared :+ "pmu_tilelink" else declared
       s"""lazy val $project = Project("$project", file("generators/hardware-workspace/${node.id}-source"))
          |  .settings(commonSettings)
          |  .settings(chiselSettings)
-         |  ${depends(node.dependencies)}
+         |  ${depends(projectDependencies)}
          |""".stripMargin + integrationSettings(projectOwner)
     }
     val system =
@@ -241,7 +332,7 @@ object ChipyardBuild {
          |  .settings(commonSettings)
          |  .settings(chiselSettings)
          |  .settings(Compile / unmanagedSourceDirectories += baseDirectory.value / "experiment")
-         |  ${depends(("chipyard" +: roots).distinct)}
+         |  ${depends(("chipyard" +: roots).distinct.map(projects))}
          |""".stripMargin + integrationSettings(owner)
     ("\n\n" + (dependencies :+ system).mkString("\n")).linesIterator.map(_.stripTrailing()).mkString("\n") + "\n"
   }

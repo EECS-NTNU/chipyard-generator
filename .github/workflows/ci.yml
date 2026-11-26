@@ -28,7 +28,11 @@ jobs:
       - uses: step-security/setup-sbt@v1
 
       - name: Publish locally and run resolver checks
-        run: sbt -batch publishLocal 'resolver/Test/runMain chipyard.generator.MilestoneOneChecks' 'resolver/Test/runMain chipyard.generator.SourceSelectionChecks'
+        run: |
+          sbt -batch publishLocal \
+            'resolver/Test/runMain chipyard.generator.MilestoneOneChecks' \
+            'resolver/Test/runMain chipyard.generator.SourceSelectionChecks' \
+            'resolver/Test/runMain chipyard.generator.AliasNamespaceChecks'
 
       - name: Verify local and Git workspaces
         shell: bash
