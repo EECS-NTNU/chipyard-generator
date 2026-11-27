@@ -5,6 +5,8 @@ import chipyard.harness.{HarnessBinderFunction, HarnessBinders}
 import chipyard.iobinders.UARTPort
 import localcounter.LocalCounter
 import org.chipsalliance.cde.config.Config
+import org.json4s.JInt
+import presolve.ElaborationParameters
 
 class WithCheckedCounter extends Config((site, here, up) => {
   case HarnessBinders =>
@@ -13,6 +15,7 @@ class WithCheckedCounter extends Config((site, here, up) => {
       case input @ (harness, _: UARTPort, _) =>
         withClockAndReset(harness.harnessBinderClock, harness.harnessBinderReset) {
           val counter = Module(new LocalCounter)
+          ElaborationParameters.report("counter", "width" -> JInt(counter.value.getWidth))
           val previousValue = RegNext(counter.value, 0.U)
           val running = RegNext(true.B, false.B)
           val reported = RegInit(false.B)

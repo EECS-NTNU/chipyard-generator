@@ -1,12 +1,18 @@
-function build_smoke_payload() {
+function build_smoke_payload() (
     local source="$REPO_ROOT/tests/acceptance/payloads" name=$1
     local riscv_bin="$CHIPYARD_TOOLCHAIN_PREFIX/riscv-tools/bin"
-    mkdir -p -- "$ACCEPTANCE_WORK/payload"
-    PATH="$riscv_bin:$PATH" "$riscv_bin/riscv64-unknown-elf-gcc" \
-        -march=rv64imac_zicsr -mabi=lp64 -nostdlib -static \
-        -Wl,--build-id=none,-T,"$source/htif.ld" \
-        "$source/$name.S" -o "$ACCEPTANCE_WORK/payload/$name.elf"
-}
+    local payload="$ACCEPTANCE_WORK/payload" staging
+    mkdir -p -- "$payload"
+    staging=$(mktemp -d "$payload/.build.XXXXXX")
+    trap 'rm -rf -- "$staging"' EXIT
+    export PATH="$riscv_bin:$PATH"
+    # The linker retains the object basename in the ELF symbol table.
+    riscv64-unknown-elf-gcc -march=rv64imac_zicsr -mabi=lp64 -c \
+        "$source/$name.S" -o "$staging/$name.o"
+    riscv64-unknown-elf-gcc -march=rv64imac_zicsr -mabi=lp64 -nostdlib -static \
+        -Wl,--build-id=none,-T,"$source/htif.ld" "$staging/$name.o" -o "$staging/$name.elf"
+    mv -- "$staging/$name.elf" "$payload/$name.elf"
+)
 
 function run_packaged_tool() {
     local workspace=$1 label=$2 status=0

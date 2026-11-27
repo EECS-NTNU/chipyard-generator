@@ -21,8 +21,8 @@ function whole_generator() {
     require_rtl_module "$run/chipyard/sims/verilator/generated-src" LocalCounter
     require_simulation_manifest whole-generator "$workspace" counter "$payload"
     printf '%s\n' 'Records the whole-generator run parameters in its manifest.'
-    jq -e '(.parameters | type == "object")' "$ACCEPTANCE_ARTIFACTS/whole-generator.build.json" >/dev/null ||
-        fail "The whole-generator run manifest must record the effective parameters"
+    jq -e '.parameters.counter.width == 8' "$ACCEPTANCE_ARTIFACTS/whole-generator.build.json" >/dev/null ||
+        fail "The whole-generator run manifest must record the effective counter width"
 }
 
 function replacement() {
@@ -51,13 +51,14 @@ function replacement() {
 
     require_simulation_manifest boom-btb-baseline "$workspace" baseline "$payload"
     require_simulation_manifest boom-btb-custom "$workspace" custom "$payload"
+    jq -e '.parameters == {}' "$ACCEPTANCE_ARTIFACTS/boom-btb-baseline.build.json" >/dev/null
     local adapter="workspace:integrations/boom/src/main/scala/WithFixtureBTB.scala"
     jq -e --arg adapter "$adapter" '.sourceSelection.activeScalaSources | index($adapter) == null' \
         "$ACCEPTANCE_ARTIFACTS/boom-btb-baseline.build.json" >/dev/null
     jq -e --arg adapter "$adapter" '.sourceSelection.activeScalaSources | index($adapter) != null' \
         "$ACCEPTANCE_ARTIFACTS/boom-btb-custom.build.json" >/dev/null
     printf '%s\n' 'Records the effective custom BTB dimensions in the run manifest.'
-    jq -e '.parameters | .. | objects | select(.sets == 64 and .ways == 4)' \
+    jq -e '.parameters["mainBtb.tile0"] | .sets == 64 and .ways == 4 and .offsetBits == 13 and .extendedSets == 64' \
         "$ACCEPTANCE_ARTIFACTS/boom-btb-custom.build.json" >/dev/null ||
         fail "The custom run manifest must record the effective BTB dimensions"
 }

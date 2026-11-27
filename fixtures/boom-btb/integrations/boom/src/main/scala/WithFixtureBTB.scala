@@ -5,12 +5,11 @@ import boom.v3.ifu._
 import chisel3._
 import freechips.rocketchip.subsystem.{InSubsystem, TilesLocated}
 import org.chipsalliance.cde.config.{Config, Parameters}
+import org.json4s.JInt
+import presolve.ElaborationParameters
 
-final class FixtureBTB(implicit p: Parameters)
-    extends BTBBranchPredictorBank(
-      BoomBTBParams(nSets = btbfixture.Module.sets, nWays = btbfixture.Module.ways,
-        extendedNSets = btbfixture.Module.sets)
-    )(p) {
+final class FixtureBTB(params: BoomBTBParams)(implicit p: Parameters)
+    extends BTBBranchPredictorBank(params)(p) {
   private val trained = RegInit(false.B)
   when (!trained && io.update.valid && io.update.bits.is_commit_update &&
       io.update.bits.cfi_idx.valid && io.update.bits.cfi_is_br && io.update.bits.cfi_taken) {
@@ -30,7 +29,12 @@ class WithFixtureBTB extends Config((site, here, up) => {
           branchPredictor = (input: BranchPredictionBankResponse, p: Parameters) => {
             val loop = Module(new LoopBranchPredictorBank()(p))
             val tage = Module(new TageBranchPredictorBank()(p))
-            val btb = Module(new FixtureBTB()(p))
+            val params = BoomBTBParams(nSets = btbfixture.Module.sets, nWays = btbfixture.Module.ways,
+              extendedNSets = btbfixture.Module.sets)
+            val btb = Module(new FixtureBTB(params)(p))
+            ElaborationParameters.report(s"mainBtb.tile${tile.tileParams.tileId}",
+              "sets" -> JInt(params.nSets), "ways" -> JInt(params.nWays),
+              "offsetBits" -> JInt(params.offsetSz), "extendedSets" -> JInt(params.extendedNSets))
             val bim = Module(new BIMBranchPredictorBank()(p))
             val ubtb = Module(new FAMicroBTBBranchPredictorBank()(p))
             val banks = Seq(loop, tage, btb, ubtb, bim)

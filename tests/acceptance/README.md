@@ -12,7 +12,7 @@ Use **Actions → Chipyard Generator CI → Run workflow** to run the suite. The
 | [Generator simulation](generator-simulation.sh) | Use the packaged CLI from independent workspaces to simulate a whole generator and a BOOM configuration with a replacement BTB. Check functional markers, effective parameters, and the diagnostic for a host without the replacement hook. |
 | [RTL integration](rtl-integration.sh) | Regenerate and simulate RTL from a separately packaged non-Chisel wrapper. Simulate two aliased BOOM revisions together and check that both harts run, expose distinct identities, and produce collision-free RTL. |
 
-The generator simulation suite checks for effective parameters in `run.json`. Those assertions are currently expected to fail because the schema lacks that field.
+The generator simulation suite checks the elaborated counter width and custom BTB dimensions in the build's `run.json`.
 
 ## Pending interfaces
 

@@ -26,8 +26,13 @@ object ChipyardBuild {
   private val simulatorDirectory = "chipyard/sims/verilator"
   private val simulatorName = "simulator-chipyard.harness-System"
   private val simulatorMarker = "simulator.ready"
+  private val parameterArtifact = "generated-src/chipyard.harness.TestHarness.System/" +
+    "chipyard.harness.TestHarness.System.presolve-parameters.json"
 
-  private final case class PreparedBuild(fingerprint: String, packageName: String, overlay: String, manifest: String)
+  private final case class PreparedBuild(
+    fingerprint: String, packageName: String, overlay: String, manifestFields: Vector[(String, String)]) {
+    def manifest(parameters: String): String = ResolutionFiles.obj(manifestFields :+ ("parameters" -> parameters))
+  }
   private final case class SimulatorBuild(directory: Path, packageName: String, toolchain: Path) {
     def executable: Path = directory.resolve(simulatorDirectory).resolve(simulatorName)
   }
@@ -65,7 +70,7 @@ object ChipyardBuild {
       platformSources.submodules.foreach { case (path, source) => git.copyCheckout(source, checkout.resolve(path)) }
       val inputs = prepareSources(workspace, checkout, resolution, experiment, versions, backend, info)
       Files.write(checkout.resolve("build.sbt"), inputs.overlay.getBytes(UTF_8), StandardOpenOption.APPEND)
-      ResolutionFiles.writeJson(staging.resolve("run.json"), inputs.manifest)
+      ResolutionFiles.writeJson(staging.resolve("run.json"), inputs.manifest("null"))
       val destination = builds.resolve(inputs.fingerprint).resolve(UUID.randomUUID().toString)
       Files.createDirectories(destination.getParent)
       Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE) -> inputs
@@ -90,6 +95,9 @@ object ChipyardBuild {
       .!(ProcessLogger(info, warn))
     if (exited != 0)
       throw new ResolutionException(s"Chipyard ${experiment.getOrElse("standalone")} failed with exit status $exited. Generated build: $directory")
+    val report = directory.resolve(simulatorDirectory).resolve(parameterArtifact)
+    val parameters = if (Files.isRegularFile(report)) new String(Files.readAllBytes(report), UTF_8).trim else "{}"
+    ResolutionFiles.writeJson(directory.resolve("run.json"), prepared.manifest(parameters))
     if (buildSimulator) {
       if (!isSimulatorExecutable(simulator.executable))
         throw new ResolutionException(s"Chipyard did not produce the simulator: ${simulator.executable}")
@@ -236,6 +244,12 @@ object ChipyardBuild {
     val selection = SourceSelection.plan(
       owner +: dependencies.initialProjects, experimentSources, dependencies.materializeIntegration,
       activate = dependencies.activateImport, aliasProjects = dependencies.aliasProjects)
+    if (!standalone) {
+      val support = Files.createDirectories(system.resolve("presolve"))
+      val resource = getClass.getResourceAsStream("/presolve/ElaborationParameters.scala")
+      try Files.copy(resource, support.resolve("ElaborationParameters.scala"))
+      finally resource.close()
+    }
     val external = dependencies.activeNodes.filter(isSourceProject)
     external.foreach { node =>
       node.source match {
@@ -253,7 +267,7 @@ object ChipyardBuild {
     val fingerprint = digest(Seq(lockFingerprint, buildName, entryPackage, overlay,
       LocalInputs.resolve(checkout, generated).fingerprint) ++ versions.map { case (tool, version) => s"$tool=$version" })
     val symbol = if (standalone) "Module" else "System"
-    val manifest = ResolutionFiles.obj(Vector(
+    val manifest = Vector(
       "schemaVersion" -> "1",
       "experiment" -> experiment.map(ResolutionFiles.string).getOrElse("null"),
       "configuration" -> ResolutionFiles.string(s"$entryPackage.$symbol"),
@@ -265,7 +279,7 @@ object ChipyardBuild {
       "sourceSelection" -> selection.json,
       "aliases" -> dependencies.aliasManifest,
       "payload" -> "null"
-    ))
+    )
     PreparedBuild(fingerprint, entryPackage, overlay, manifest)
   }
 
@@ -424,7 +438,7 @@ object ChipyardBuild {
       s"""lazy val hardwareSystem = Project("hardwareSystem", file("generators/hardware-workspace/system"))
          |  .settings(commonSettings)
          |  .settings(chiselSettings)
-         |  .settings(Compile / unmanagedSourceDirectories += baseDirectory.value / "experiment")
+         |  .settings(Compile / unmanagedSourceDirectories ++= Seq("experiment", "presolve").map(baseDirectory.value / _))
          |  ${depends(("chipyard" +: roots).distinct.map(projects))}
          |""".stripMargin + integrationSettings(owner)
     ("\n\n" + (dependencies :+ system).mkString("\n")).linesIterator.map(_.stripTrailing()).mkString("\n") + "\n"
