@@ -79,7 +79,7 @@ private object WorkspaceTemplate {
       "README.md" ->
         s"""# $name
            |
-           |Install presolve and publish the Chipyard Generator plugin locally from the tool checkout.
+           |Install Presolve and its matching sbt plugin using the release installer or the tool checkout's setup script.
            |Presolve looks for the pinned Chipyard toolchain in its local share directory.
            |Use `CHIPYARD_TOOLCHAIN_PREFIX` to select a toolchain installed elsewhere.
            |

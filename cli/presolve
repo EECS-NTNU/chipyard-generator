@@ -1,5 +1,14 @@
 #!/bin/sh
 set -eu
 
-directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+launcher=$0
+while [ -L "$launcher" ]; do
+    directory=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
+    launcher=$(readlink "$launcher")
+    case $launcher in
+        /*) ;;
+        *) launcher=$directory/$launcher ;;
+    esac
+done
+directory=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
 exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -cp "$directory/lib/*" chipyard.generator.cli.Presolve "$@"

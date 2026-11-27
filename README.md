@@ -6,48 +6,9 @@ Follow the [Presolve BTB tutorial](docs/presolve-btb.md) to build a stock BOOM s
 
 Use the [fixture authoring guide](docs/fixtures.md) to set up a baseline and test a custom hardware structure in Presolve.
 
+See [The Presolve Workspace](docs/presolve-workspace.md) for the directory layout and where to put hardware dependencies, experiments, and integrations.
+
 Follow the [target software guide](docs/target-software.md) to build a Linux boot image, package Linux applications, or run bare-metal programs on a generated system.
-
-## Develop Chipyard Generator in VS Code
-
-Open this checkout with VS Code and run **Dev Containers: Reopen in Container**. The [development config](.devcontainer/devcontainer.json) mounts the checkout for editing and provides JDK 17, sbt, Git, and Scala Metals. Run `bash cli/setup.sh` inside the container if you want to set up `presolve` and configure a Chipyard toolchain.
-
-Docker uses the default backend. On the cluster, connect using Remote SSH and set `dev.containers.dockerPath` in the remote VS Code settings to the absolute path of [`containers/podman`](containers/podman) in this checkout. The wrapper uses node-local temporary storage and Podman's `keep-id` mapping so VS Code can write to the mounted checkout. Podman's image storage also belongs on node-local storage when your home directory is on Lustre. [VS Code backend settings](https://code.visualstudio.com/remote/advancedcontainers/docker-options#podman) · [Podman UID mapping](https://docs.podman.io/en/stable/markdown/podman-run.1.html#userns-mode) · [Podman storage](https://docs.podman.io/en/stable/markdown/podman.1.html#note-unsupported-file-systems-in-rootless-mode)
-
-## Run a project with the container image
-
-Build the runtime image on Linux x86-64 from the generator checkout. Use `podman` for the cluster or `docker` on a Docker host. The image packages `presolve`, the sbt plugin, and the pinned Chipyard toolchain. The image build downloads and installs the toolchain.
-
-```bash
-engine=podman
-TMPDIR=/tmp "$engine" build -t presolve-runtime .
-```
-
-In Bash, set `project` to the absolute path of your source project. Edit that directory on the host and rerun the desired command. The project mount holds `hardware.lock` and generated outputs, and a separate mount retains downloaded sources and dependencies. The image filesystem is read-only.
-
-```bash
-project=/absolute/path/to/my-accelerator
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/presolve-container"
-mkdir -p "$cache"
-
-run_options=(--rm --read-only --tmpfs /tmp:exec,mode=1777 --user "$(id -u):$(id -g)")
-if [[ $engine == podman ]]; then
-  run_options+=(--userns=keep-id)
-fi
-
-presolve_container() {
-  "$engine" run "${run_options[@]}" \
-    --mount "type=bind,source=$project,target=/workspace" \
-    --mount "type=bind,source=$cache,target=/cache" \
-    presolve-runtime "$@"
-}
-
-presolve_container resolve
-presolve_container compile baseline
-presolve_container run baseline ./program.elf
-```
-
-To scaffold a project with the image, set `project` to an existing parent directory and run `presolve_container create-project my-accelerator`. Then set `project` to the new project directory for the build commands.
 
 ## Create a workspace with presolve
 
@@ -89,6 +50,63 @@ presolve run baseline ./program.elf
 `presolve build` prints the build directory and simulator executable. `presolve run` uses the newest successful simulator build for the current experiment, sources, lockfile, and toolchain. If the inputs change, build again or use `presolve run baseline ./program.elf --build <build-dir>` to select an earlier successful build by its printed directory. Workspace commands also work from subdirectories. Relative ELF and build paths are resolved from the directory where you invoke Presolve.
 
 Use `presolve compile baseline` to generate RTL only. `elaborate` and `simulate` are aliases for `compile` and `run`. `presolve build-fpga baseline` is a placeholder for bitstream builds and exits with status 1.
+
+### Build and install a Presolve release
+
+From the Chipyard Generator checkout, run `sbt cli/dist` with `tar` on your PATH. Share the resulting `cli/target/presolve-<version>.tar.gz`. It contains the launcher, its JVM libraries, and the matching sbt plugin and resolver.
+
+On the destination machine, extract the archive and run its installer. For example, for version `0.1.0-SNAPSHOT`:
+
+```sh
+tar -xzf presolve-0.1.0-SNAPSHOT.tar.gz
+cd presolve-0.1.0-SNAPSHOT
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+presolve --help
+```
+
+Install a JDK (11 or newer) before running the installer. The installer needs no checkout or administrator access. It installs the launcher in `~/.local/bin` and the sbt artifacts in `~/.ivy2/local`. If you use a custom sbt Ivy home, pass its path with `./install.sh --ivy-home DIRECTORY`. Workspace commands use Git and sbt and may fetch third-party dependencies. Hardware builds and simulations require the separate [pinned Chipyard toolchain](reference/chipyard-rocket/README.md).
+
+## Develop Chipyard Generator in VS Code
+
+Open this checkout with VS Code and run **Dev Containers: Reopen in Container**. The [development config](.devcontainer/devcontainer.json) mounts the checkout for editing and provides JDK 17, sbt, Git, and Scala Metals. Run `bash cli/setup.sh` inside the container if you want to set up `presolve` and configure a Chipyard toolchain.
+
+Docker uses the default backend. On the cluster, connect using Remote SSH and set `dev.containers.dockerPath` in the remote VS Code settings to the absolute path of [`containers/podman`](containers/podman) in this checkout. The wrapper uses node-local temporary storage and Podman's `keep-id` mapping so VS Code can write to the mounted checkout. Podman's image storage also belongs on node-local storage when your home directory is on Lustre. [VS Code backend settings](https://code.visualstudio.com/remote/advancedcontainers/docker-options#podman) · [Podman UID mapping](https://docs.podman.io/en/stable/markdown/podman-run.1.html#userns-mode) · [Podman storage](https://docs.podman.io/en/stable/markdown/podman.1.html#note-unsupported-file-systems-in-rootless-mode)
+
+## Run a project with the container image
+
+Build the runtime image on Linux x86-64 from the generator checkout. Use `podman` for the cluster or `docker` on a Docker host. The image packages `presolve`, the sbt plugin, and the pinned Chipyard toolchain. The image build downloads and installs the toolchain.
+
+```bash
+engine=podman
+TMPDIR=/tmp "$engine" build -t presolve-runtime .
+```
+
+In Bash, set `project` to the absolute path of your source project. Edit that directory on the host and rerun the desired command. The project mount holds `hardware.lock` and generated outputs, and a separate mount retains downloaded sources and dependencies. The image filesystem is read-only.
+
+```bash
+project=/absolute/path/to/my-accelerator
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/presolve-container"
+mkdir -p "$cache"
+
+run_options=(--rm --read-only --tmpfs /tmp:exec,mode=1777 --user "$(id -u):$(id -g)")
+if [[ $engine == podman ]]; then
+  run_options+=(--userns=keep-id)
+fi
+
+presolve_container() {
+  "$engine" run "${run_options[@]}" \
+    --mount "type=bind,source=$project,target=/workspace" \
+    --mount "type=bind,source=$cache,target=/cache" \
+    presolve-runtime "$@"
+}
+
+presolve_container resolve
+presolve_container compile baseline
+presolve_container run baseline ./program.elf
+```
+
+To scaffold a project with the image, set `project` to an existing parent directory and run `presolve_container create-project my-accelerator`. Then set `project` to the new project directory for the build commands.
 
 ## Try it locally
 

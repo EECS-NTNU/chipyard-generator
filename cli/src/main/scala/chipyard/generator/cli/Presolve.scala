@@ -25,7 +25,7 @@ object Presolve {
       |
       |Workspace commands look for build.sbt in the current directory and its parents.
       |Resolve, verify, compile, standalone, build, software, and run require sbt on PATH.
-      |For a generated workspace, publish the plugin locally with sbt publishLocal from the tool checkout.
+      |Install the matching plugin with the release installer or run sbt publishLocal from the tool checkout.
       |Resolve before compiling or running. Presolve looks for the pinned Chipyard
       |toolchain under $XDG_DATA_HOME/presolve (default: $HOME/.local/share/presolve).
       |Use CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain in build.sbt to override it.
