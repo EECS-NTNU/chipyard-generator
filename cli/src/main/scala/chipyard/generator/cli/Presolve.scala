@@ -1,7 +1,8 @@
 package chipyard.generator.cli
 
 import java.io.IOException
-import java.nio.file.{Files, Path, Paths}
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import scala.collection.JavaConverters._
 
 object Presolve {
@@ -17,12 +18,14 @@ object Presolve {
       |  standalone                  Elaborate the workspace Module to RTL
       |  build <experiment>          Build a Verilator simulator
       |  build-fpga <experiment>     FPGA bitstream build placeholder
+      |  software setup              Initialize FireMarshal in the configured Chipyard checkout
+      |  software shell              Open Bash with the workspace's Chipyard Conda environment
       |  run <experiment> <elf> [--build <build-dir>]
       |                              Run an ELF with an existing simulator (alias: simulate)
       |
       |Workspace commands look for build.sbt in the current directory and its parents.
-      |Resolve, verify, compile, standalone, build, and run require sbt on PATH. For a generated workspace,
-      |publish the plugin locally with sbt publishLocal from the tool checkout.
+      |Resolve, verify, compile, standalone, build, software, and run require sbt on PATH.
+      |For a generated workspace, publish the plugin locally with sbt publishLocal from the tool checkout.
       |Resolve before compiling or running. Presolve looks for the pinned Chipyard
       |toolchain under $XDG_DATA_HOME/presolve (default: $HOME/.local/share/presolve).
       |Use CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain in build.sbt to override it.
@@ -70,6 +73,8 @@ object Presolve {
     case "resolve" :: Nil => sbt(workspaceRoot(cwd), "hardwareResolve")
     case "verify" :: Nil => sbt(workspaceRoot(cwd), "hardwareVerify")
     case "standalone" :: Nil => sbt(workspaceRoot(cwd), "hardwareElaborateStandalone")
+    case "software" :: "setup" :: Nil => sbt(workspaceRoot(cwd), "hardwareSoftwareSetup")
+    case "software" :: "shell" :: Nil => softwareShell(workspaceRoot(cwd))
     case ("compile" | "elaborate") :: name :: Nil =>
       val workspace = workspaceRoot(cwd)
       checkExperiment(workspace, name)
@@ -88,6 +93,30 @@ object Presolve {
     case _ =>
       Console.err.println("presolve: Unknown command or incorrect arguments. See presolve --help.")
       2
+  }
+
+  private def softwareShell(workspace: Path): Int = {
+    val prefixFile = Files.createTempFile("presolve-conda-prefix-", ".txt")
+    val prefix = try {
+      val status = sbt(workspace, s"hardwareSoftwareShellPrefix ${quoteSbtArgument(prefixFile.toString)}",
+        Seq("-batch", "-error"))
+      if (status != 0) return status
+      val path = new String(Files.readAllBytes(prefixFile), UTF_8)
+      if (path.isEmpty) throw new IOException("sbt did not return a Chipyard Conda environment.")
+      path
+    } finally Files.deleteIfExists(prefixFile)
+
+    val startup = Files.createTempFile("presolve-software-shell-", ".bash")
+    try {
+      val script = getClass.getResourceAsStream("/software-shell.bash")
+      if (script == null) throw new IOException("The Presolve Bash startup script is missing.")
+      try Files.copy(script, startup, StandardCopyOption.REPLACE_EXISTING)
+      finally script.close()
+      val bash = new ProcessBuilder("bash", "--rcfile", startup.toString, "-i")
+        .directory(workspace.toFile).inheritIO()
+      bash.environment().put("PRESOLVE_SOFTWARE_PREFIX", prefix)
+      bash.start().waitFor()
+    } finally Files.deleteIfExists(startup)
   }
 
   private def simulate(cwd: Path, name: String, elf: String, build: Option[Path]): Int = {
@@ -118,8 +147,9 @@ object Presolve {
   private def quoteSbtArgument(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
-  private def sbt(workspace: Path, command: String): Int = {
-    val process = try new ProcessBuilder("sbt", command).directory(workspace.toFile).inheritIO().start()
+  private def sbt(workspace: Path, command: String, options: Seq[String] = Nil): Int = {
+    val arguments = "sbt" +: options :+ command
+    val process = try new ProcessBuilder(arguments.asJava).directory(workspace.toFile).inheritIO().start()
     catch {
       case error: IOException =>
         throw new IOException(s"Could not start sbt in $workspace. Check that sbt is installed and on PATH.", error)

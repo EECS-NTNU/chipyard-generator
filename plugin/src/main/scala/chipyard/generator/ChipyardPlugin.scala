@@ -22,11 +22,13 @@ object ChipyardPlugin extends AutoPlugin {
     val hardwareElaborateStandalone = inputKey[File]("Elaborate the workspace Module without a system.")
     val hardwareBuildSimulator = inputKey[File]("Build a Verilator simulator. Usage: hardwareBuildSimulator <experiment>")
     val hardwareSimulate = inputKey[File]("Run an ELF. Usage: hardwareSimulate <experiment> <binary> [--build <build-dir>]")
+    val hardwareSoftwareSetup = taskKey[File]("Initialize FireMarshal in the configured Chipyard checkout.")
   }
 
   import autoImport._
 
   private val hardwareResolution = taskKey[Resolution]("Evaluate the resolved hardware dependency graph.")
+  private val hardwareSoftwareShellPrefix = inputKey[Unit]("Write the configured Conda prefix for the Presolve shell.")
   private sealed abstract class BuildCommand(val name: String, val arguments: List[String])
   private case object Elaborate extends BuildCommand("hardwareElaborate", List("<experiment>"))
   private case object BuildSimulator extends BuildCommand("hardwareBuildSimulator", List("<experiment>"))
@@ -66,7 +68,31 @@ object ChipyardPlugin extends AutoPlugin {
     hardwareElaborate := build(Elaborate).evaluated,
     hardwareBuildSimulator := build(BuildSimulator).evaluated,
     hardwareSimulate := simulate.evaluated,
-    hardwareElaborateStandalone := build(Standalone).evaluated
+    hardwareElaborateStandalone := build(Standalone).evaluated,
+    hardwareSoftwareShellPrefix := {
+      val args = spaceDelimited("<output-file>").parsed
+      val toolchain = hardwareChipyardToolchain.value
+      if (args.size != 1)
+        throw new MessageOnlyException("Usage: hardwareSoftwareShellPrefix <output-file>")
+      val prefix = toolchain.getOrElse(throw new MessageOnlyException(
+        "Set CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain to the Chipyard toolchain prefix."))
+        .getAbsoluteFile.toPath.normalize()
+      if (!Files.isDirectory(prefix.resolve("conda-meta")))
+        throw new MessageOnlyException(s"The configured Chipyard toolchain is not a Conda environment: $prefix")
+      IO.write(file(args.head), prefix.toString)
+    },
+    hardwareSoftwareSetup := {
+      val revision = chipyardVersion.value
+      val toolchain = hardwareChipyardToolchain.value
+      val offlineSetup = hardwareOffline.value
+      val log = streams.value.log
+      reportErrors {
+        val prefix = toolchain.getOrElse(throw new MessageOnlyException(
+          "Set CHIPYARD_TOOLCHAIN_PREFIX or hardwareChipyardToolchain to the Chipyard toolchain prefix."))
+        ChipyardSoftware.setup(prefix.toPath, revision, offlineSetup, message => log.info(message),
+          message => log.warn(message)).toFile
+      }
+    }
   )
 
   private def installedToolchain(revision: String): Option[File] =
